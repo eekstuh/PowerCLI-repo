@@ -114,15 +114,17 @@ function Read-VmNamePrefix {
 
 function Read-VmCount {
 
+    $maximumVmCount = 10
+
     while ($true) {
-        $answer = Read-Host 'How many new VMs do you want to create?'
+        $answer = Read-Host "How many new VMs do you want to create? (maximum $maximumVmCount)"
         $count = 0
 
-        if ([int]::TryParse($answer, [ref]$count) -and $count -gt 0) {
+        if ([int]::TryParse($answer, [ref]$count) -and $count -ge 1 -and $count -le $maximumVmCount) {
             return $count
         }
 
-        Write-Warning 'Enter a whole number greater than zero.'
+        Write-Warning "Enter a whole number from 1 through $maximumVmCount."
     }
 }
 
