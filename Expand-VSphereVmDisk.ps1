@@ -449,7 +449,14 @@ function Select-WindowsGuestPartition {
     Write-Host "`nWindows guest disks and partitions:" -ForegroundColor Cyan
     $Partitions |
         Sort-Object DiskNumber, PartitionNumber |
-        Select-Object DiskNumber, DiskSizeGB, PartitionNumber, DriveLetter, Label, SizeGB, Type, IsRecovery |
+        Select-Object DiskNumber,
+            PartitionNumber,
+            DriveLetter,
+            Label,
+            @{ Name = 'PartitionSizeGB'; Expression = { $_.SizeGB } },
+            DiskSizeGB,
+            Type,
+            IsRecovery |
         Format-Table -AutoSize |
         Out-Host
 
