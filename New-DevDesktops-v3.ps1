@@ -133,12 +133,15 @@ function Get-NextVmNames {
         [string]$Prefix,
 
         [Parameter(Mandatory = $true)]
-        [int]$Count
+        [int]$Count,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Cluster
     )
 
     $escapedPrefix = [regex]::Escape($Prefix)
     $existingNumbers = @(
-        Get-VM -Name "$Prefix*" -ErrorAction SilentlyContinue |
+        Get-VM -Name "$Prefix*" -Location $Cluster -ErrorAction SilentlyContinue |
             ForEach-Object {
                 if ($_.Name -match "^$escapedPrefix(?<Number>\d+)$") {
                     [pscustomobject]@{
@@ -182,15 +185,16 @@ function Get-NextVmNames {
 
 $namePrefix = Read-VmNamePrefix
 $vmCount = Read-VmCount
-$plan = Get-NextVmNames -Prefix $namePrefix -Count $vmCount
+$targetCluster = Get-Cluster -Name $ClusterName -ErrorAction Stop
+$plan = Get-NextVmNames -Prefix $namePrefix -Count $vmCount -Cluster $targetCluster
 $vmNames = @($plan.Names)
 
 Write-Host ''
 if ($plan.LatestNumber -gt 0) {
-    Write-Host "Highest existing $namePrefix VM number: $($plan.LatestNumber)" -ForegroundColor Green
+    Write-Host "Highest existing $namePrefix VM number in cluster '$($targetCluster.Name)': $($plan.LatestNumber)" -ForegroundColor Green
 }
 else {
-    Write-Host "No existing VMs matching $namePrefix<number> were found." -ForegroundColor Yellow
+    Write-Host "No existing VMs matching $namePrefix<number> were found in cluster '$($targetCluster.Name)'." -ForegroundColor Yellow
 }
 
 Write-Host ''
@@ -227,8 +231,8 @@ for ($index = 0; $index -lt $vmNames.Count; $index++) {
     $name = $vmNames[$index]
     $displayIndex = $index + 1
 
-    if (Get-VM -Name $name -ErrorAction SilentlyContinue) {
-        Write-Warning "VM '$name' already exists"
+    if (Get-VM -Name $name -Location $targetCluster -ErrorAction SilentlyContinue) {
+        Write-Warning "VM '$name' already exists in cluster '$($targetCluster.Name)'"
         continue
     }
 
@@ -253,7 +257,7 @@ for ($index = 0; $index -lt $vmNames.Count; $index++) {
             [void](New-VM @params)
 
             # Re-query instead of trusting return object
-            $vm = Get-VM -Name $name -ErrorAction Stop
+            $vm = Get-VM -Name $name -Location $targetCluster -ErrorAction Stop
 
             Write-Host "[OK] Created: $($vm.Name)" -ForegroundColor Green
 
