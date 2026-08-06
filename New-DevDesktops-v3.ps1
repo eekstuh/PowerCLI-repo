@@ -145,6 +145,7 @@ function Get-NextVmNames {
             ForEach-Object {
                 if ($_.Name -match "^$escapedPrefix(?<Number>\d+)$") {
                     [pscustomobject]@{
+                        Name        = $_.Name
                         Number      = [long]$Matches.Number
                         SuffixWidth = $Matches.Number.Length
                     }
@@ -175,6 +176,7 @@ function Get-NextVmNames {
 
     [pscustomobject]@{
         LatestNumber = $latestNumber
+        LatestName   = if ($latest) { $latest.Name } else { $null }
         Names        = $names
     }
 }
@@ -191,7 +193,7 @@ $vmNames = @($plan.Names)
 
 Write-Host ''
 if ($plan.LatestNumber -gt 0) {
-    Write-Host "Highest existing $namePrefix VM number in cluster '$($targetCluster.Name)': $($plan.LatestNumber)" -ForegroundColor Green
+    Write-Host "Highest existing VM in cluster '$($targetCluster.Name)': $($plan.LatestName)" -ForegroundColor Green
 }
 else {
     Write-Host "No existing VMs matching $namePrefix<number> were found in cluster '$($targetCluster.Name)'." -ForegroundColor Yellow
