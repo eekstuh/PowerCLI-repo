@@ -378,7 +378,15 @@ function Invoke-WindowsGuestPowerShell {
     # guest script starts, returning exit code 1 with no ScriptOutput.
     $wrappedScript = @'
 try {
+    $guestResults = @(& {
 __GUEST_SCRIPT_BODY__
+    })
+    if ($guestResults.Count -eq 0) {
+        throw 'Guest operation returned no result payload.'
+    }
+    Write-Output '__VMWARE_GUEST_PAYLOAD_BEGIN__'
+    Write-Output ([string]$guestResults[-1]).Trim()
+    Write-Output '__VMWARE_GUEST_PAYLOAD_END__'
 }
 catch {
     Write-Output ("Guest exception: " + $_.Exception.Message + [Environment]::NewLine + $_.InvocationInfo.PositionMessage)
@@ -396,7 +404,25 @@ catch {
         throw "The Windows guest script failed with exit code $($result.ExitCode): $($errorDetails.Trim())"
     }
 
-    return $result.ScriptOutput.Trim()
+    $rawOutput = [string]$result.ScriptOutput
+    $beginMarker = '__VMWARE_GUEST_PAYLOAD_BEGIN__'
+    $endMarker = '__VMWARE_GUEST_PAYLOAD_END__'
+    $beginIndex = $rawOutput.LastIndexOf($beginMarker, [System.StringComparison]::Ordinal)
+    if ($beginIndex -lt 0) {
+        $displayOutput = $rawOutput.Trim()
+        if ($displayOutput.Length -gt 2000) {
+            $displayOutput = $displayOutput.Substring(0, 2000) + '...'
+        }
+        throw "The Windows guest returned an unframed result. Guest output: $displayOutput"
+    }
+
+    $payloadStart = $beginIndex + $beginMarker.Length
+    $endIndex = $rawOutput.IndexOf($endMarker, $payloadStart, [System.StringComparison]::Ordinal)
+    if ($endIndex -lt 0) {
+        throw 'The Windows guest result was incomplete: the payload end marker was missing.'
+    }
+
+    return $rawOutput.Substring($payloadStart, $endIndex - $payloadStart).Trim()
 }
 
 function Get-WindowsGuestPartitions {
