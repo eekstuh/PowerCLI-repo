@@ -44,9 +44,6 @@ opens the standard PowerShell credential prompt.
 Skips all vSphere virtual-disk changes and runs only the Windows guest partition
 workflow. Use this to resume after the VMDK was already expanded.
 
-.PARAMETER EnhancedUI
-Enables the enhanced console interface used by Expand-VSphereVmDisk-v2.ps1.
-
 .EXAMPLE
 .\Expand-VSphereVmDisk.ps1 -VIServer vcsa01.contoso.com
 
@@ -93,112 +90,16 @@ param(
     [System.Management.Automation.PSCredential]$GuestCredential,
 
     [Parameter()]
-    [switch]$GuestOnly,
-
-    [Parameter()]
-    [switch]$EnhancedUI
+    [switch]$GuestOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $script:ExitRequested = $false
 $script:VmdkExpanded = $false
 $script:GuestPartitionDeleted = $false
-$script:GuestPartitionExtended = $false
 $vmNameWasSupplied = $PSBoundParameters.ContainsKey('VMName')
 $diskNumberWasSupplied = $PSBoundParameters.ContainsKey('DiskNumber')
 $sizeWasSupplied = $PSBoundParameters.ContainsKey('GBSizeToIncrease')
-
-function Write-EnhancedUiBanner {
-    if (-not $EnhancedUI) {
-        return
-    }
-
-    $line = '=' * 72
-    Write-Host "`n$line" -ForegroundColor DarkCyan
-    Write-Host '  vSphere Windows Disk Expansion Assistant - Version 2' -ForegroundColor Cyan
-    Write-Host '  VMDK expansion | Guest partition analysis | Recovery handling' -ForegroundColor Gray
-    Write-Host $line -ForegroundColor DarkCyan
-    Write-Host "Type 'exit' at any text prompt to stop.`n" -ForegroundColor DarkGray
-}
-
-function Write-EnhancedUiPhase {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Progress,
-
-        [Parameter(Mandatory)]
-        [string]$Title
-    )
-
-    if (-not $EnhancedUI) {
-        return
-    }
-
-    Write-Host "`n[$Progress] $Title" -ForegroundColor Cyan
-    Write-Host ('-' * 72) -ForegroundColor DarkGray
-}
-
-function Write-EnhancedUiStatus {
-    param(
-        [Parameter(Mandatory)]
-        [ValidateSet('Info', 'Success', 'Action')]
-        [string]$Type,
-
-        [Parameter(Mandatory)]
-        [string]$Message
-    )
-
-    if (-not $EnhancedUI) {
-        return
-    }
-
-    $settings = switch ($Type) {
-        'Success' { @{ Prefix = '[OK]'; Color = 'Green' } }
-        'Action'  { @{ Prefix = '[>>]'; Color = 'Yellow' } }
-        default   { @{ Prefix = '[i]'; Color = 'Gray' } }
-    }
-    Write-Host "$($settings.Prefix) $Message" -ForegroundColor $settings.Color
-}
-
-function Write-EnhancedUiSummary {
-    param(
-        [Parameter(Mandatory)]
-        [string]$SelectedVM,
-
-        [Parameter(Mandatory)]
-        [string]$Progress,
-
-        [Parameter()]
-        [string]$SelectedDisk,
-
-        [Parameter()]
-        [Nullable[decimal]]$OldCapacityGB,
-
-        [Parameter()]
-        [Nullable[decimal]]$NewCapacityGB
-    )
-
-    if (-not $EnhancedUI) {
-        return
-    }
-
-    Write-EnhancedUiPhase -Progress $Progress -Title 'Operation summary'
-    Write-Host ("  VM:                 {0}" -f $SelectedVM)
-    if (-not [string]::IsNullOrWhiteSpace($SelectedDisk)) {
-        Write-Host ("  Virtual disk:       {0}" -f $SelectedDisk)
-    }
-    if ($null -ne $OldCapacityGB -and $null -ne $NewCapacityGB) {
-        Write-Host ("  vSphere capacity:   {0} GB -> {1} GB" -f $OldCapacityGB, $NewCapacityGB)
-    }
-    elseif ($GuestOnly) {
-        Write-Host '  vSphere capacity:   Skipped (GuestOnly mode)'
-    }
-    Write-Host ("  Guest partition:    {0}" -f $(if ($script:GuestPartitionExtended) { 'Extended' } else { 'Not extended' }))
-    if ($script:GuestPartitionDeleted) {
-        Write-Host '  Blocking partition: Deleted with confirmation' -ForegroundColor Yellow
-    }
-    Write-Host ('=' * 72) -ForegroundColor DarkCyan
-}
 
 function Read-ExitAwareInput {
     [OutputType([string])]
@@ -1020,39 +921,30 @@ function Invoke-WindowsGuestPartitionExtension {
     }
 
     $result = Expand-WindowsGuestPartition -VM $VM -Credential $credential -Partition $partition
-    $script:GuestPartitionExtended = $true
     Write-Host "Successfully extended Windows disk $($partition.DiskNumber), partition $($partition.PartitionNumber) to $($result.NewSizeGB) GB." -ForegroundColor Green
 }
 
 try {
-    Write-EnhancedUiBanner
-    Write-EnhancedUiPhase -Progress $(if ($GuestOnly) { '1/2' } else { '1/4' }) -Title 'Connect to vCenter and select the VM'
     $server = Get-VCenterConnection
     Write-Host "Connected to vCenter Server: $($server.Name)" -ForegroundColor Green
-    Write-EnhancedUiStatus -Type Success -Message "Using vCenter connection '$($server.Name)'."
 
     $vmArguments = @{ Server = $server }
     if ($vmNameWasSupplied) {
         $vmArguments.InitialVMName = $VMName
     }
     $vm = Select-ExactVM @vmArguments
-    Write-EnhancedUiStatus -Type Success -Message "Selected VM '$($vm.Name)'."
 
     if ($GuestOnly) {
-        Write-EnhancedUiPhase -Progress '2/2' -Title 'Inspect and extend the Windows guest partition'
         Write-Warning "Guest-only mode: no vSphere virtual disk capacity will be changed on '$($vm.Name)'."
         Invoke-WindowsGuestPartitionExtension -VM $vm
-        Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '2/2'
         return
     }
 
-    Write-EnhancedUiPhase -Progress '2/4' -Title 'Select and expand the vSphere virtual disk'
     $diskArguments = @{ VM = $vm; Server = $server }
     if ($diskNumberWasSupplied) {
         $diskArguments.InitialDiskNumber = $DiskNumber
     }
     $disk = Select-HardDisk @diskArguments
-    Write-EnhancedUiStatus -Type Info -Message "Selected $($disk.Name) with current capacity $($disk.CapacityGB) GB."
 
     $capacityArguments = @{}
     if ($sizeWasSupplied) {
@@ -1080,22 +972,17 @@ try {
         Write-Warning "The change was not confirmed. Type YES to proceed, or 'exit' to cancel."
     }
 
-    Write-EnhancedUiStatus -Type Action -Message "Expanding $($disk.Name) to $newCapacityGB GB in vSphere..."
     Set-HardDisk -HardDisk $disk -CapacityGB $newCapacityGB -Confirm:$false -ErrorAction Stop | Out-Null
     $script:VmdkExpanded = $true
 
     Write-Host "`nSuccessfully expanded '$($disk.Name)' on '$($vm.Name)' by $additionalGB GB." -ForegroundColor Green
-    Write-EnhancedUiStatus -Type Success -Message 'The vSphere virtual disk expansion completed.'
 
-    Write-EnhancedUiPhase -Progress '3/4' -Title 'Optional Windows guest partition extension'
     if (Read-YesNo -Prompt 'Would you like to inspect and extend a Windows guest partition now?') {
         Invoke-WindowsGuestPartitionExtension -VM $vm
     }
     else {
         Write-Host 'The Windows partition/volume was not extended.' -ForegroundColor Yellow
     }
-
-    Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '4/4' -SelectedDisk $disk.Name -OldCapacityGB $currentCapacityGB -NewCapacityGB $newCapacityGB
 }
 catch {
     Write-Error $_.Exception.Message
