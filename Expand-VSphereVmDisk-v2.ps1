@@ -373,7 +373,6 @@ function Select-HardDisk {
             Disk         = $disks[$index].Name
             CapacityGB   = [decimal]$disks[$index].CapacityGB
             DatastoreFile = $disks[$index].Filename
-            Persistence  = $disks[$index].Persistence
         }
     }
     $diskList | Format-Table -AutoSize | Out-Host

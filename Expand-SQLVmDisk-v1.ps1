@@ -536,7 +536,6 @@ function Select-HardDisk {
             GuestVolumes = Get-GuestVolumeDisplayForHardDisk -HardDisk $disks[$index] -VolumeLabelsByPath $VolumeLabelsByPath
             CapacityGB   = [decimal]$disks[$index].CapacityGB
             DatastoreFile = $disks[$index].Filename
-            Persistence  = $disks[$index].Persistence
         }
     }
     $diskList | Format-Table -AutoSize | Out-Host
