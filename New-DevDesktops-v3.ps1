@@ -232,12 +232,16 @@ $targetCluster = Get-Cluster -Name $ClusterName -ErrorAction Stop
 
 $plan = $null
 if ($nameSelection -eq 'CUSTOM') {
-    $customVmName = Read-CustomVmName
-    $existingCustomVm = @(Get-ExistingVmByBaseName -BaseName $customVmName -Cluster $targetCluster)
+    while ($true) {
+        $customVmName = Read-CustomVmName
+        $existingCustomVm = @(Get-ExistingVmByBaseName -BaseName $customVmName -Cluster $targetCluster)
 
-    if ($existingCustomVm.Count -gt 0) {
-        Write-Warning "VM '$($existingCustomVm[0].Name)' already exists in cluster '$($targetCluster.Name)'. No VM will be created."
-        return
+        if ($existingCustomVm.Count -gt 0) {
+            Write-Warning "VM '$($existingCustomVm[0].Name)' already exists in cluster '$($targetCluster.Name)'. Enter another VM name."
+            continue
+        }
+
+        break
     }
 
     $vmNames = @($customVmName)
