@@ -348,7 +348,20 @@ function Select-HardDisk {
         [int]$InitialDiskNumber
     )
 
-    $disks = @(Get-HardDisk -VM $VM -Server $Server -ErrorAction Stop | Sort-Object Name)
+    $disks = @(
+        Get-HardDisk -VM $VM -Server $Server -ErrorAction Stop |
+            Sort-Object `
+                @{ Expression = {
+                    $diskNumberMatch = [regex]::Match([string]$_.Name, '\d+(?=\D*$)')
+                    if ($diskNumberMatch.Success) {
+                        [int]$diskNumberMatch.Value
+                    }
+                    else {
+                        [int]::MaxValue
+                    }
+                } },
+                Name
+    )
     if ($disks.Count -eq 0) {
         throw "VM '$($VM.Name)' has no virtual hard disks."
     }
