@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   - Prompts for the 11VMGC, 11VMDEV, 11VMSAS, or a single custom VM name
-  - Finds the highest existing number and generates the next names
+  - Finds the highest existing number, including VMs renamed with " - User Name"
   - Shows the complete plan and requires confirmation before provisioning
   - Avoids PowerCLI ClientMapper / EndProcessing crashes
   - Does NOT rely on New-VM output objects
@@ -149,6 +149,25 @@ function Read-VmCount {
     }
 }
 
+function Get-ExistingVmByBaseName {
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BaseName,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Cluster
+    )
+
+    $escapedBaseName = [regex]::Escape($BaseName)
+    $validNamePattern = "^$escapedBaseName(?:\s+-\s+.+)?$"
+
+    return @(
+        Get-VM -Name "$BaseName*" -Location $Cluster -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match $validNamePattern }
+    )
+}
+
 function Get-NextVmNames {
 
     param(
@@ -166,7 +185,7 @@ function Get-NextVmNames {
     $existingNumbers = @(
         Get-VM -Name "$Prefix*" -Location $Cluster -ErrorAction SilentlyContinue |
             ForEach-Object {
-                if ($_.Name -match "^$escapedPrefix(?<Number>\d+)$") {
+                if ($_.Name -match "^$escapedPrefix(?<Number>\d+)(?:\s+-\s+.+)?$") {
                     [pscustomobject]@{
                         Name        = $_.Name
                         Number      = [long]$Matches.Number
@@ -214,13 +233,10 @@ $targetCluster = Get-Cluster -Name $ClusterName -ErrorAction Stop
 $plan = $null
 if ($nameSelection -eq 'CUSTOM') {
     $customVmName = Read-CustomVmName
-    $existingCustomVm = @(
-        Get-VM -Name $customVmName -Location $targetCluster -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -ieq $customVmName }
-    )
+    $existingCustomVm = @(Get-ExistingVmByBaseName -BaseName $customVmName -Cluster $targetCluster)
 
     if ($existingCustomVm.Count -gt 0) {
-        Write-Warning "VM '$customVmName' already exists in cluster '$($targetCluster.Name)'. No VM will be created."
+        Write-Warning "VM '$($existingCustomVm[0].Name)' already exists in cluster '$($targetCluster.Name)'. No VM will be created."
         return
     }
 
@@ -276,8 +292,9 @@ for ($index = 0; $index -lt $vmNames.Count; $index++) {
     $name = $vmNames[$index]
     $displayIndex = $index + 1
 
-    if (Get-VM -Name $name -Location $targetCluster -ErrorAction SilentlyContinue) {
-        Write-Warning "VM '$name' already exists in cluster '$($targetCluster.Name)'"
+    $existingVm = @(Get-ExistingVmByBaseName -BaseName $name -Cluster $targetCluster)
+    if ($existingVm.Count -gt 0) {
+        Write-Warning "VM '$($existingVm[0].Name)' already exists in cluster '$($targetCluster.Name)'"
         continue
     }
 
