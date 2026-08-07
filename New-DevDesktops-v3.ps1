@@ -3,7 +3,7 @@
   Interactively create a numbered batch of developer desktop VMs.
 
 .DESCRIPTION
-  - Prompts for the 11VMGC, 11VMDEV, or 11VMSAS naming convention
+  - Prompts for the 11VMGC, 11VMDEV, 11VMSAS, or a single custom VM name
   - Finds the highest existing number and generates the next names
   - Shows the complete plan and requires confirmation before provisioning
   - Avoids PowerCLI ClientMapper / EndProcessing crashes
@@ -90,6 +90,7 @@ function Read-VmNamePrefix {
         '1'       = '11VMGC'
         '2'       = '11VMDEV'
         '3'       = '11VMSAS'
+        '4'       = 'CUSTOM'
         '11VMGC'  = '11VMGC'
         '11VMDEV' = '11VMDEV'
         '11VMSAS' = '11VMSAS'
@@ -101,14 +102,34 @@ function Read-VmNamePrefix {
         Write-Host '  1. 11VMGC'
         Write-Host '  2. 11VMDEV'
         Write-Host '  3. 11VMSAS'
+        Write-Host '  4. Custom VM name'
 
-        $selection = (Read-Host 'Enter 1, 2, or 3').Trim().ToUpperInvariant()
+        $selection = (Read-Host 'Enter 1, 2, 3, or 4').Trim().ToUpperInvariant()
 
         if ($choices.ContainsKey($selection)) {
             return $choices[$selection]
         }
 
-        Write-Warning 'Invalid selection. Enter 1, 2, or 3.'
+        Write-Warning 'Invalid selection. Enter 1, 2, 3, or 4.'
+    }
+}
+
+function Read-CustomVmName {
+
+    while ($true) {
+        $name = (Read-Host 'Enter the custom VM name').Trim()
+
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            Write-Warning 'The custom VM name cannot be blank.'
+            continue
+        }
+
+        if ($name.IndexOfAny([char[]]'*?[]') -ge 0) {
+            Write-Warning 'Wildcard characters (*, ?, [, and ]) are not allowed in a custom VM name.'
+            continue
+        }
+
+        return $name
     }
 }
 
@@ -187,18 +208,38 @@ function Get-NextVmNames {
 # BUILD PLAN
 # ------------------------------------------------------------
 
-$namePrefix = Read-VmNamePrefix
-$vmCount = Read-VmCount
+$nameSelection = Read-VmNamePrefix
 $targetCluster = Get-Cluster -Name $ClusterName -ErrorAction Stop
-$plan = Get-NextVmNames -Prefix $namePrefix -Count $vmCount -Cluster $targetCluster
-$vmNames = @($plan.Names)
 
-Write-Host ''
-if ($plan.LatestNumber -gt 0) {
-    Write-Host "Highest existing VM in cluster '$($targetCluster.Name)': $($plan.LatestName)" -ForegroundColor Green
+$plan = $null
+if ($nameSelection -eq 'CUSTOM') {
+    $customVmName = Read-CustomVmName
+    $existingCustomVm = @(
+        Get-VM -Name $customVmName -Location $targetCluster -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ieq $customVmName }
+    )
+
+    if ($existingCustomVm.Count -gt 0) {
+        Write-Warning "VM '$customVmName' already exists in cluster '$($targetCluster.Name)'. No VM will be created."
+        return
+    }
+
+    $vmNames = @($customVmName)
+    Write-Host "Custom VM name '$customVmName' is available in cluster '$($targetCluster.Name)'." -ForegroundColor Green
 }
 else {
-    Write-Host "No existing VMs matching $namePrefix<number> were found in cluster '$($targetCluster.Name)'." -ForegroundColor Yellow
+    $namePrefix = $nameSelection
+    $vmCount = Read-VmCount
+    $plan = Get-NextVmNames -Prefix $namePrefix -Count $vmCount -Cluster $targetCluster
+    $vmNames = @($plan.Names)
+
+    Write-Host ''
+    if ($plan.LatestNumber -gt 0) {
+        Write-Host "Highest existing VM in cluster '$($targetCluster.Name)': $($plan.LatestName)" -ForegroundColor Green
+    }
+    else {
+        Write-Host "No existing VMs matching $namePrefix<number> were found in cluster '$($targetCluster.Name)'." -ForegroundColor Yellow
+    }
 }
 
 Write-Host ''
