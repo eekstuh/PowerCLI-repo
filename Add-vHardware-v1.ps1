@@ -34,6 +34,10 @@ Optional action: CPU, Memory, or Disk.
 .PARAMETER CPUToAdd
 Number of vCPUs to add when Action is CPU.
 
+.PARAMETER TargetCPUCount
+Desired total vCPU count when Action is CPU: 8, 16, 24, or 32. This cannot be
+used together with CPUToAdd. Interactive use asks for the desired total.
+
 .PARAMETER MemoryGBToAdd
 Memory in GB to add when Action is Memory.
 
@@ -51,7 +55,7 @@ Storage format for a new disk: Thin, Thick, or EagerZeroedThick. Default: Thin.
 .\Add-vHardware-v1.ps1
 
 .EXAMPLE
-.\Add-vHardware-v1.ps1 -VMName SQL01 -Action CPU -CPUToAdd 2
+.\Add-vHardware-v1.ps1 -VMName SQL01 -Action CPU -TargetCPUCount 16
 
 .EXAMPLE
 .\Add-vHardware-v1.ps1 -VMName SQL01 -Action Memory -MemoryGBToAdd 16
@@ -86,6 +90,10 @@ param(
     [Parameter()]
     [ValidateRange(1, 2147483647)]
     [int]$CPUToAdd,
+
+    [Parameter()]
+    [ValidateSet(8, 16, 24, 32)]
+    [int]$TargetCPUCount,
 
     [Parameter()]
     [ValidateScript({
@@ -127,9 +135,14 @@ $script:ExitRequested = $false
 $vmNameWasSupplied = $PSBoundParameters.ContainsKey('VMName')
 $actionWasSupplied = $PSBoundParameters.ContainsKey('Action')
 $cpuWasSupplied = $PSBoundParameters.ContainsKey('CPUToAdd')
+$targetCpuWasSupplied = $PSBoundParameters.ContainsKey('TargetCPUCount')
 $memoryWasSupplied = $PSBoundParameters.ContainsKey('MemoryGBToAdd')
 $diskSizeWasSupplied = $PSBoundParameters.ContainsKey('DiskSizeGB')
 $datastoreWasSupplied = $PSBoundParameters.ContainsKey('DatastoreName')
+
+if ($cpuWasSupplied -and $targetCpuWasSupplied) {
+    throw 'CPUToAdd and TargetCPUCount cannot be used together.'
+}
 
 function Write-Banner {
     $line = '=' * 72
@@ -292,20 +305,38 @@ function Select-HardwareAction {
     }
 }
 
-function Read-PositiveInteger {
+function Read-TargetCpuCount {
     param(
         [Parameter(Mandatory)]
-        [string]$Prompt
+        [int]$CurrentCpu
     )
 
+    $supportedCpuCounts = @(8, 16, 24, 32)
+    $availableCpuCounts = @($supportedCpuCounts | Where-Object { $_ -gt $CurrentCpu })
+    if ($availableCpuCounts.Count -eq 0) {
+        throw "VM already has $CurrentCpu vCPUs. No higher supported target is available; this script offers totals of 8, 16, 24, and 32."
+    }
+
     while ($true) {
-        $inputValue = Read-ExitAwareInput -Prompt $Prompt
-        Stop-IfExitRequested
-        [int]$number = 0
-        if ([int]::TryParse($inputValue, [ref]$number) -and $number -gt 0) {
-            return $number
+        Write-Host "`nChoose the desired total vCPU count:" -ForegroundColor Cyan
+        for ($index = 0; $index -lt $availableCpuCounts.Count; $index++) {
+            Write-Host "  $($index + 1). $($availableCpuCounts[$index]) vCPUs"
         }
-        Write-Warning 'Enter a positive whole number.'
+
+        $selection = Read-ExitAwareInput -Prompt "Enter a menu number or total vCPU count ($($availableCpuCounts -join ', '))"
+        Stop-IfExitRequested
+
+        [int]$number = 0
+        if ([int]::TryParse($selection, [ref]$number)) {
+            if ($number -ge 1 -and $number -le $availableCpuCounts.Count) {
+                return $availableCpuCounts[$number - 1]
+            }
+            if ($availableCpuCounts -contains $number) {
+                return $number
+            }
+        }
+
+        Write-Warning "Choose one of these totals: $($availableCpuCounts -join ', ')."
     }
 }
 
@@ -851,21 +882,27 @@ try {
     switch ($selectedAction) {
         'CPU' {
             Assert-HotAddAvailability -VM $vm -Resource CPU
-            while ($true) {
-                $amountToAdd = if ($cpuWasSupplied) { $CPUToAdd } else { Read-PositiveInteger -Prompt 'Enter the number of vCPUs to add' }
-                $newCpuCount = [int]$vm.NumCpu + $amountToAdd
+            $newCpuCount = if ($targetCpuWasSupplied) {
+                $TargetCPUCount
+            }
+            elseif ($cpuWasSupplied) {
+                [int]$vm.NumCpu + $CPUToAdd
+            }
+            else {
+                Read-TargetCpuCount -CurrentCpu ([int]$vm.NumCpu)
+            }
 
-                if ([string]$vm.PowerState -eq 'PoweredOn' -and $newCpuCount % $currentCoresPerSocket -ne 0) {
-                    $message = "Powered-on VM '$($vm.Name)' uses $currentCoresPerSocket cores per socket. The new total of $newCpuCount vCPUs is incompatible; the number added must be a multiple of $currentCoresPerSocket."
-                    if ($cpuWasSupplied) {
-                        throw "$message No change was made."
-                    }
+            if ($newCpuCount -le [int]$vm.NumCpu) {
+                throw "The target CPU count must be greater than the current $($vm.NumCpu) vCPUs. No change was made."
+            }
 
-                    Write-Warning $message
-                    continue
+            if ([string]$vm.PowerState -eq 'PoweredOn') {
+                if ($newCpuCount -gt $currentCoresPerSocket) {
+                    throw "Powered-on VM '$($vm.Name)' is configured for $currentCoresPerSocket cores per socket. vSphere cannot hot-add to $newCpuCount vCPUs because that total exceeds the current topology limit. Power off the VM, then rerun this change. No change was made."
                 }
-
-                break
+                if ($newCpuCount % $currentCoresPerSocket -ne 0) {
+                    throw "Powered-on VM '$($vm.Name)' uses $currentCoresPerSocket cores per socket, which is incompatible with a total of $newCpuCount vCPUs. Power off the VM to change its CPU topology. No change was made."
+                }
             }
 
             $newCoresPerSocket = if ([string]$vm.PowerState -eq 'PoweredOn') {
