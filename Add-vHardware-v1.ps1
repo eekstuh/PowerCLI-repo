@@ -772,6 +772,7 @@ function Show-ExistingDisks {
             Disk          = $hardDisks[$index].Name
             CapacityGB    = [decimal]$hardDisks[$index].CapacityGB
             Datastore     = Get-VmdkDatastoreName -DatastorePath ([string]$hardDisks[$index].Filename)
+            VmdkFolder    = Get-VmdkFolder -DatastorePath ([string]$hardDisks[$index].Filename)
             BackingFile   = Get-VmdkFileName -DatastorePath ([string]$hardDisks[$index].Filename)
         }
     }
@@ -793,6 +794,7 @@ try {
     Write-Host "  Power state: $($vm.PowerState)"
     Write-Host "  Current CPU: $($vm.NumCpu) vCPU(s)"
     Write-Host "  Current RAM: $($vm.MemoryGB) GB"
+    $null = Show-ExistingDisks -VM $vm -Server $server
 
     $selectedAction = Select-HardwareAction
     switch ($selectedAction) {
@@ -839,7 +841,6 @@ try {
         }
 
         'Disk' {
-            $null = Show-ExistingDisks -VM $vm -Server $server
             [decimal]$capacity = if ($diskSizeWasSupplied) { $DiskSizeGB } else { Read-PositiveDecimal -Prompt 'Enter the new disk size in GB' }
             $datastores = @(Get-AvailableDatastores -VM $vm -Server $server)
             $datastoreArguments = @{ Datastores = $datastores }
