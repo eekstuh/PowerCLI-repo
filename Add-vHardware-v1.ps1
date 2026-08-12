@@ -601,11 +601,15 @@ function Wait-VSphereTask {
         [object]$Server
     )
 
-    $taskView = Get-View -Id $TaskReference -Server $Server -Property Info.State,Info.Error -ErrorAction Stop
-    while ($taskView.Info.State -in @('queued', 'running')) {
-        Start-Sleep -Seconds 1
-        $taskView.UpdateViewData(@('Info.State', 'Info.Error'))
-    }
+    # Query a fresh Task view on each pass. UpdateViewData can reject nested
+    # TaskInfo property paths on some PowerCLI/vCenter combinations even after
+    # the underlying reconfiguration has already completed successfully.
+    do {
+        $taskView = Get-View -Id $TaskReference -Server $Server -Property Info.State,Info.Error -ErrorAction Stop
+        if ($taskView.Info.State -in @('queued', 'running')) {
+            Start-Sleep -Seconds 1
+        }
+    } while ($taskView.Info.State -in @('queued', 'running'))
 
     if ($taskView.Info.State -ne 'success') {
         $message = [string]$taskView.Info.Error.LocalizedMessage
