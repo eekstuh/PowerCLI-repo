@@ -3,12 +3,12 @@
 
 <#
 .SYNOPSIS
-Adds CPU, memory, or a uniquely named virtual disk to one vSphere VM.
+Changes CPU or memory, or adds a uniquely named virtual disk to one vSphere VM.
 
 .DESCRIPTION
 Selects a VM by exact name and provides three actions:
   1. Add vCPUs
-  2. Add memory
+  2. Add or remove memory
   3. Add an additional virtual disk
 
 New virtual disks are created with an explicitly selected backing filename.
@@ -41,6 +41,14 @@ used together with CPUToAdd. Interactive use asks for the desired total.
 .PARAMETER MemoryGBToAdd
 Memory in GB to add when Action is Memory.
 
+.PARAMETER MemoryGBToRemove
+Memory in GB to remove when Action is Memory. Memory removal requires the VM
+to be powered off. This cannot be used together with MemoryGBToAdd.
+
+.PARAMETER MemoryOperation
+Optional memory operation: Add or Remove. When omitted, the script infers it
+from a memory amount parameter or prompts interactively.
+
 .PARAMETER DiskSizeGB
 Capacity in GB of the new disk when Action is Disk.
 
@@ -59,6 +67,9 @@ Storage format for a new disk: Thin, Thick, or EagerZeroedThick. Default: Thin.
 
 .EXAMPLE
 .\Add-vHardware-v1.ps1 -VMName SQL01 -Action Memory -MemoryGBToAdd 16
+
+.EXAMPLE
+.\Add-vHardware-v1.ps1 -VMName SQL01 -Action Memory -MemoryOperation Remove -MemoryGBToRemove 8
 
 .EXAMPLE
 .\Add-vHardware-v1.ps1 -VMName SQL01 -Action Disk -DiskSizeGB 250 -DatastoreName SQL-DATA-02 -StorageFormat Thin
@@ -107,6 +118,19 @@ param(
     [Parameter()]
     [ValidateScript({
             if ($_ -le 0) {
+                throw 'MemoryGBToRemove must be greater than zero.'
+            }
+            $true
+        })]
+    [decimal]$MemoryGBToRemove,
+
+    [Parameter()]
+    [ValidateSet('Add', 'Remove')]
+    [string]$MemoryOperation,
+
+    [Parameter()]
+    [ValidateScript({
+            if ($_ -le 0) {
                 throw 'DiskSizeGB must be greater than zero.'
             }
             $true
@@ -136,19 +160,30 @@ $vmNameWasSupplied = $PSBoundParameters.ContainsKey('VMName')
 $actionWasSupplied = $PSBoundParameters.ContainsKey('Action')
 $cpuWasSupplied = $PSBoundParameters.ContainsKey('CPUToAdd')
 $targetCpuWasSupplied = $PSBoundParameters.ContainsKey('TargetCPUCount')
-$memoryWasSupplied = $PSBoundParameters.ContainsKey('MemoryGBToAdd')
+$memoryAddWasSupplied = $PSBoundParameters.ContainsKey('MemoryGBToAdd')
+$memoryRemoveWasSupplied = $PSBoundParameters.ContainsKey('MemoryGBToRemove')
+$memoryOperationWasSupplied = $PSBoundParameters.ContainsKey('MemoryOperation')
 $diskSizeWasSupplied = $PSBoundParameters.ContainsKey('DiskSizeGB')
 $datastoreWasSupplied = $PSBoundParameters.ContainsKey('DatastoreName')
 
 if ($cpuWasSupplied -and $targetCpuWasSupplied) {
     throw 'CPUToAdd and TargetCPUCount cannot be used together.'
 }
+if ($memoryAddWasSupplied -and $memoryRemoveWasSupplied) {
+    throw 'MemoryGBToAdd and MemoryGBToRemove cannot be used together.'
+}
+if ($memoryOperationWasSupplied -and $MemoryOperation -eq 'Add' -and $memoryRemoveWasSupplied) {
+    throw "MemoryOperation 'Add' cannot be used with MemoryGBToRemove."
+}
+if ($memoryOperationWasSupplied -and $MemoryOperation -eq 'Remove' -and $memoryAddWasSupplied) {
+    throw "MemoryOperation 'Remove' cannot be used with MemoryGBToAdd."
+}
 
 function Write-Banner {
     $line = '=' * 72
     Write-Host "`n$line" -ForegroundColor DarkCyan
     Write-Host '  vSphere VM Hardware Assistant - Version 1' -ForegroundColor Cyan
-    Write-Host '  Add vCPU | Add memory | Add a uniquely named virtual disk' -ForegroundColor Gray
+    Write-Host '  Add vCPU | Add/remove memory | Add a uniquely named virtual disk' -ForegroundColor Gray
     Write-Host $line -ForegroundColor DarkCyan
     Write-Host "Type 'exit' at any text prompt to stop.`n" -ForegroundColor DarkGray
 }
@@ -285,9 +320,9 @@ function Select-HardwareAction {
     }
 
     while ($true) {
-        Write-Host "`nChoose the hardware to add:" -ForegroundColor Cyan
+        Write-Host "`nChoose the hardware operation:" -ForegroundColor Cyan
         Write-Host '  1. vCPU'
-        Write-Host '  2. Memory'
+        Write-Host '  2. Add or remove memory'
         Write-Host '  3. Additional disk'
 
         $selection = Read-ExitAwareInput -Prompt 'Enter 1, 2, or 3'
@@ -301,6 +336,34 @@ function Select-HardwareAction {
             '3'      { return 'Disk' }
             'DISK'   { return 'Disk' }
             default { Write-Warning 'Enter 1, 2, or 3.' }
+        }
+    }
+}
+
+function Select-MemoryOperation {
+    if ($memoryOperationWasSupplied) {
+        return $MemoryOperation
+    }
+    if ($memoryAddWasSupplied) {
+        return 'Add'
+    }
+    if ($memoryRemoveWasSupplied) {
+        return 'Remove'
+    }
+
+    while ($true) {
+        Write-Host "`nChoose the memory operation:" -ForegroundColor Cyan
+        Write-Host '  1. Add memory'
+        Write-Host '  2. Remove memory'
+
+        $selection = Read-ExitAwareInput -Prompt 'Enter 1 or 2'
+        Stop-IfExitRequested
+        switch ($selection.Trim().ToUpperInvariant()) {
+            '1'      { return 'Add' }
+            'ADD'    { return 'Add' }
+            '2'      { return 'Remove' }
+            'REMOVE' { return 'Remove' }
+            default { Write-Warning 'Enter 1 or 2.' }
         }
     }
 }
@@ -945,13 +1008,52 @@ try {
         }
 
         'Memory' {
-            Assert-HotAddAvailability -VM $vm -Resource Memory
-            $amountToAdd = if ($memoryWasSupplied) { $MemoryGBToAdd } else { Read-PositiveDecimal -Prompt 'Enter the memory to add in GB' }
-            [decimal]$newMemoryGB = [decimal]$vm.MemoryGB + $amountToAdd
+            $selectedMemoryOperation = Select-MemoryOperation
+            if ($selectedMemoryOperation -eq 'Add') {
+                Assert-HotAddAvailability -VM $vm -Resource Memory
+                $memoryAmountGB = if ($memoryAddWasSupplied) {
+                    $MemoryGBToAdd
+                }
+                else {
+                    Read-PositiveDecimal -Prompt 'Enter the memory to add in GB'
+                }
+                [decimal]$newMemoryGB = [decimal]$vm.MemoryGB + $memoryAmountGB
+                $memoryChangeDescription = 'Add memory'
+                $memorySuccessVerb = 'increased'
+            }
+            else {
+                if ([string]$vm.PowerState -ne 'PoweredOff') {
+                    throw "Memory cannot be removed while VM '$($vm.Name)' is $($vm.PowerState). Power off the VM, then rerun the removal. No change was made."
+                }
+
+                while ($true) {
+                    $memoryAmountGB = if ($memoryRemoveWasSupplied) {
+                        $MemoryGBToRemove
+                    }
+                    else {
+                        Read-PositiveDecimal -Prompt 'Enter the memory to remove in GB'
+                    }
+
+                    if ($memoryAmountGB -lt [decimal]$vm.MemoryGB) {
+                        break
+                    }
+
+                    $message = "The removal amount must be less than the VM's current $($vm.MemoryGB) GB of memory."
+                    if ($memoryRemoveWasSupplied) {
+                        throw "$message No change was made."
+                    }
+                    Write-Warning $message
+                }
+
+                [decimal]$newMemoryGB = [decimal]$vm.MemoryGB - $memoryAmountGB
+                $memoryChangeDescription = 'Remove memory'
+                $memorySuccessVerb = 'decreased'
+            }
 
             Write-Host "`nPlanned change:" -ForegroundColor Cyan
-            Write-Host "  VM:     $($vm.Name)"
-            Write-Host "  Memory: $($vm.MemoryGB) GB -> $newMemoryGB GB"
+            Write-Host "  VM:        $($vm.Name)"
+            Write-Host "  Operation: $memoryChangeDescription"
+            Write-Host "  Memory:    $($vm.MemoryGB) GB -> $newMemoryGB GB"
             if (-not (Read-YesNo -Prompt 'Apply this memory change?')) {
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
                 return
@@ -962,7 +1064,7 @@ try {
             if ([decimal]$verifiedVm.MemoryGB -ne $newMemoryGB) {
                 throw "The memory operation completed, but verification returned $($verifiedVm.MemoryGB) GB instead of $newMemoryGB GB."
             }
-            Write-Host "Successfully increased '$($vm.Name)' memory to $newMemoryGB GB." -ForegroundColor Green
+            Write-Host "Successfully $memorySuccessVerb '$($vm.Name)' memory to $newMemoryGB GB." -ForegroundColor Green
         }
 
         'Disk' {
