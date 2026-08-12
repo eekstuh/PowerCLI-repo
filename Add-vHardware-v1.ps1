@@ -794,6 +794,10 @@ try {
     Write-Host "  Power state: $($vm.PowerState)"
     Write-Host "  Current CPU: $($vm.NumCpu) vCPU(s)"
     Write-Host "  Current RAM: $($vm.MemoryGB) GB"
+    $cpuHotAddEnabled = [bool]$vm.ExtensionData.Config.CpuHotAddEnabled
+    $memoryHotAddEnabled = [bool]$vm.ExtensionData.Config.MemoryHotAddEnabled
+    Write-Host ("  CPU Hot Add:    {0}" -f $(if ($cpuHotAddEnabled) { 'Enabled' } else { 'Disabled' })) -ForegroundColor $(if ($cpuHotAddEnabled) { 'Green' } else { 'Yellow' })
+    Write-Host ("  Memory Hot Add: {0}" -f $(if ($memoryHotAddEnabled) { 'Enabled' } else { 'Disabled' })) -ForegroundColor $(if ($memoryHotAddEnabled) { 'Green' } else { 'Yellow' })
     $null = Show-ExistingDisks -VM $vm -Server $server
 
     $selectedAction = Select-HardwareAction
