@@ -697,7 +697,9 @@ function Add-UniqueVirtualDisk {
     $fileName = $target.FileName
     $targetPath = $target.DatastorePath
 
-    $vmView = Get-View -VIObject $VM -Server $Server -Property Config.Hardware.Device,Config.Files.VmPathName -ErrorAction Stop
+    # Get-View's VIObject parameter set does not accept -Server. The VM object
+    # already carries its originating vCenter connection context.
+    $vmView = Get-View -VIObject $VM -Property Config.Hardware.Device,Config.Files.VmPathName -ErrorAction Stop
     $scsiLocation = Get-FreeScsiLocation -VMView $vmView
 
     $backing = New-Object VMware.Vim.VirtualDiskFlatVer2BackingInfo
