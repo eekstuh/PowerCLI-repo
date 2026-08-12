@@ -326,6 +326,45 @@ function Read-PositiveDecimal {
     }
 }
 
+function Get-VmCoresPerSocket {
+    param(
+        [Parameter(Mandatory)]
+        [object]$VM
+    )
+
+    $coresPerSocket = [int]$VM.ExtensionData.Config.Hardware.NumCoresPerSocket
+    if ($coresPerSocket -lt 1) {
+        return 1
+    }
+
+    return $coresPerSocket
+}
+
+function Get-CompatibleCoresPerSocket {
+    param(
+        [Parameter(Mandatory)]
+        [int]$TotalCpu,
+
+        [Parameter(Mandatory)]
+        [int]$PreferredCoresPerSocket
+    )
+
+    if ($TotalCpu % $PreferredCoresPerSocket -eq 0) {
+        return $PreferredCoresPerSocket
+    }
+
+    # Select the largest valid divisor no greater than the current setting.
+    # This keeps the topology as close as possible without exceeding the
+    # administrator's existing cores-per-socket choice.
+    for ($candidate = [math]::Min($PreferredCoresPerSocket, $TotalCpu); $candidate -ge 1; $candidate--) {
+        if ($TotalCpu % $candidate -eq 0) {
+            return $candidate
+        }
+    }
+
+    return 1
+}
+
 function Assert-HotAddAvailability {
     param(
         [Parameter(Mandatory)]
@@ -796,9 +835,11 @@ try {
         $vmArguments.InitialVMName = $VMName
     }
     $vm = Select-ExactVM @vmArguments
+    $currentCoresPerSocket = Get-VmCoresPerSocket -VM $vm
     Write-Host "Selected VM '$($vm.Name)'." -ForegroundColor Green
     Write-Host "  Power state: $($vm.PowerState)"
     Write-Host "  Current CPU: $($vm.NumCpu) vCPU(s)"
+    Write-Host "  Cores/socket: $currentCoresPerSocket"
     Write-Host "  Current RAM: $($vm.MemoryGB) GB"
     $cpuHotAddEnabled = [bool]$vm.ExtensionData.Config.CpuHotAddEnabled
     $memoryHotAddEnabled = [bool]$vm.ExtensionData.Config.MemoryHotAddEnabled
@@ -810,23 +851,60 @@ try {
     switch ($selectedAction) {
         'CPU' {
             Assert-HotAddAvailability -VM $vm -Resource CPU
-            $amountToAdd = if ($cpuWasSupplied) { $CPUToAdd } else { Read-PositiveInteger -Prompt 'Enter the number of vCPUs to add' }
-            $newCpuCount = [int]$vm.NumCpu + $amountToAdd
+            while ($true) {
+                $amountToAdd = if ($cpuWasSupplied) { $CPUToAdd } else { Read-PositiveInteger -Prompt 'Enter the number of vCPUs to add' }
+                $newCpuCount = [int]$vm.NumCpu + $amountToAdd
+
+                if ([string]$vm.PowerState -eq 'PoweredOn' -and $newCpuCount % $currentCoresPerSocket -ne 0) {
+                    $message = "Powered-on VM '$($vm.Name)' uses $currentCoresPerSocket cores per socket. The new total of $newCpuCount vCPUs is incompatible; the number added must be a multiple of $currentCoresPerSocket."
+                    if ($cpuWasSupplied) {
+                        throw "$message No change was made."
+                    }
+
+                    Write-Warning $message
+                    continue
+                }
+
+                break
+            }
+
+            $newCoresPerSocket = if ([string]$vm.PowerState -eq 'PoweredOn') {
+                $currentCoresPerSocket
+            }
+            else {
+                Get-CompatibleCoresPerSocket -TotalCpu $newCpuCount -PreferredCoresPerSocket $currentCoresPerSocket
+            }
 
             Write-Host "`nPlanned change:" -ForegroundColor Cyan
-            Write-Host "  VM:   $($vm.Name)"
-            Write-Host "  vCPU: $($vm.NumCpu) -> $newCpuCount"
+            Write-Host "  VM:               $($vm.Name)"
+            Write-Host "  vCPU:             $($vm.NumCpu) -> $newCpuCount"
+            Write-Host "  Cores per socket: $currentCoresPerSocket -> $newCoresPerSocket"
             if (-not (Read-YesNo -Prompt 'Apply this vCPU change?')) {
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
                 return
             }
 
-            Set-VM -VM $vm -NumCpu $newCpuCount -Confirm:$false -Server $server -ErrorAction Stop | Out-Null
+            $cpuChangeParameters = @{
+                VM          = $vm
+                NumCpu      = $newCpuCount
+                Confirm     = $false
+                Server      = $server
+                ErrorAction = 'Stop'
+            }
+            if ($newCoresPerSocket -ne $currentCoresPerSocket) {
+                $cpuChangeParameters.CoresPerSocket = $newCoresPerSocket
+            }
+
+            Set-VM @cpuChangeParameters | Out-Null
             $verifiedVm = Get-VM -Id $vm.Id -Server $server -ErrorAction Stop
             if ([int]$verifiedVm.NumCpu -ne $newCpuCount) {
                 throw "The vCPU operation completed, but verification returned $($verifiedVm.NumCpu) instead of $newCpuCount."
             }
-            Write-Host "Successfully increased '$($vm.Name)' to $newCpuCount vCPU(s)." -ForegroundColor Green
+            $verifiedCoresPerSocket = Get-VmCoresPerSocket -VM $verifiedVm
+            if ($verifiedCoresPerSocket -ne $newCoresPerSocket) {
+                throw "The vCPU operation completed, but verification returned $verifiedCoresPerSocket cores per socket instead of $newCoresPerSocket."
+            }
+            Write-Host "Successfully increased '$($vm.Name)' to $newCpuCount vCPU(s) with $newCoresPerSocket cores per socket." -ForegroundColor Green
         }
 
         'Memory' {
