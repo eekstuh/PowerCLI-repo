@@ -14,7 +14,9 @@ Selects a VM by exact name and provides three actions:
 New virtual disks are created with an explicitly selected backing filename.
 The filename follows the existing VM disk naming convention and is checked
 against every attached VMDK filename, preventing duplicate names when the new
-disk is placed on another datastore.
+disk is placed on another datastore. For disk additions, the script displays
+each SCSI controller and its attached disks, then prompts for the controller
+that should receive the new disk.
 
 Type 'exit' at any text prompt to stop the script.
 
@@ -695,6 +697,62 @@ function Get-TargetVmdkFolder {
 function Get-FreeScsiLocation {
     param(
         [Parameter(Mandatory)]
+        [object]$VMView,
+
+        [Parameter(Mandatory)]
+        [int]$ControllerKey
+    )
+
+    $devices = @($VMView.Config.Hardware.Device)
+    $controller = @(
+        $devices |
+            Where-Object {
+                $_ -is [VMware.Vim.VirtualSCSIController] -and
+                [int]$_.Key -eq $ControllerKey
+            }
+    ) | Select-Object -First 1
+
+    if ($null -eq $controller) {
+        throw "The selected SCSI controller is no longer present on the VM. No disk was created."
+    }
+
+    $usedUnits = @(
+        $devices |
+            Where-Object { $_.ControllerKey -eq $controller.Key } |
+            ForEach-Object { [int]$_.UnitNumber }
+    )
+    foreach ($unitNumber in 0..15) {
+        if ($unitNumber -eq 7 -or $usedUnits -contains $unitNumber) {
+            continue
+        }
+        return [pscustomobject]@{
+            ControllerKey = [int]$controller.Key
+            BusNumber     = [int]$controller.BusNumber
+            UnitNumber    = $unitNumber
+        }
+    }
+
+    throw "SCSI controller $($controller.BusNumber) no longer has a free unit number. No disk was created."
+}
+
+function Get-ScsiControllerTypeName {
+    param(
+        [Parameter(Mandatory)]
+        [object]$Controller
+    )
+
+    switch ($Controller.GetType().Name) {
+        'ParaVirtualSCSIController'       { return 'VMware Paravirtual' }
+        'VirtualLsiLogicSASController'    { return 'LSI Logic SAS' }
+        'VirtualLsiLogicController'       { return 'LSI Logic Parallel' }
+        'VirtualBusLogicController'       { return 'BusLogic Parallel' }
+        default                           { return $Controller.GetType().Name }
+    }
+}
+
+function Get-ScsiControllerInventory {
+    param(
+        [Parameter(Mandatory)]
         [object]$VMView
     )
 
@@ -704,25 +762,86 @@ function Get-FreeScsiLocation {
             Where-Object { $_ -is [VMware.Vim.VirtualSCSIController] } |
             Sort-Object BusNumber
     )
-    foreach ($controller in $controllers) {
+    if ($controllers.Count -eq 0) {
+        throw 'The VM has no SCSI controller. Add a SCSI controller before adding this disk.'
+    }
+
+    $inventory = for ($index = 0; $index -lt $controllers.Count; $index++) {
+        $controller = $controllers[$index]
+        $attachedDisks = @(
+            $devices |
+                Where-Object {
+                    $_ -is [VMware.Vim.VirtualDisk] -and
+                    $_.ControllerKey -eq $controller.Key
+                } |
+                Sort-Object UnitNumber
+        )
         $usedUnits = @(
             $devices |
                 Where-Object { $_.ControllerKey -eq $controller.Key } |
                 ForEach-Object { [int]$_.UnitNumber }
         )
-        foreach ($unitNumber in 0..15) {
-            if ($unitNumber -eq 7 -or $usedUnits -contains $unitNumber) {
-                continue
-            }
-            return [pscustomobject]@{
-                ControllerKey = [int]$controller.Key
-                BusNumber     = [int]$controller.BusNumber
-                UnitNumber    = $unitNumber
-            }
+        $freeUnits = @(
+            0..15 | Where-Object { $_ -ne 7 -and $usedUnits -notcontains $_ }
+        )
+        $attachmentSummary = if ($attachedDisks.Count -eq 0) {
+            '(none)'
+        }
+        else {
+            ($attachedDisks | ForEach-Object {
+                    "$($_.DeviceInfo.Label) ($($controller.BusNumber):$($_.UnitNumber))"
+                }) -join ', '
+        }
+
+        [pscustomobject]@{
+            Choice            = $index + 1
+            ControllerKey     = [int]$controller.Key
+            BusNumber         = [int]$controller.BusNumber
+            Controller        = "SCSI $($controller.BusNumber)"
+            Type              = Get-ScsiControllerTypeName -Controller $controller
+            FreeUnitNumbers   = $freeUnits
+            FreeSlots         = $freeUnits.Count
+            AttachedDisks     = $attachedDisks
+            AttachmentSummary = $attachmentSummary
         }
     }
 
-    throw 'No free unit number is available on the VM existing SCSI controllers. Add another SCSI controller before adding this disk.'
+    return $inventory
+}
+
+function Select-ScsiController {
+    param(
+        [Parameter(Mandatory)]
+        [object]$VM
+    )
+
+    $vmView = Get-View -VIObject $VM -Property Config.Hardware.Device -ErrorAction Stop
+    $controllers = @(Get-ScsiControllerInventory -VMView $vmView)
+
+    Write-Host "`nSCSI controllers and attached virtual disks:" -ForegroundColor Cyan
+    $controllers |
+        Select-Object Choice, Controller, Type, FreeSlots, @{ Name = 'AttachedDisks'; Expression = { $_.AttachmentSummary } } |
+        Format-Table -AutoSize -Wrap |
+        Out-Host
+
+    while ($true) {
+        $selection = Read-ExitAwareInput -Prompt 'Choose the SCSI controller for the new disk (enter its Choice number)'
+        Stop-IfExitRequested
+
+        [int]$choice = 0
+        if (-not [int]::TryParse($selection, [ref]$choice) -or $choice -lt 1 -or $choice -gt $controllers.Count) {
+            Write-Warning "Enter a Choice number from 1 to $($controllers.Count)."
+            continue
+        }
+
+        $selectedController = $controllers[$choice - 1]
+        if ($selectedController.FreeSlots -eq 0) {
+            Write-Warning "$($selectedController.Controller) is full. Choose a controller with at least one free slot."
+            continue
+        }
+
+        return $selectedController
+    }
 }
 
 function Wait-VSphereTask {
@@ -822,7 +941,10 @@ function Add-UniqueVirtualDisk {
         [string]$Format,
 
         [Parameter(Mandatory)]
-        [string]$ExpectedDatastorePath
+        [string]$ExpectedDatastorePath,
+
+        [Parameter(Mandatory)]
+        [int]$ControllerKey
     )
 
     # Re-resolve immediately before creation. If anything claimed the confirmed
@@ -837,7 +959,7 @@ function Add-UniqueVirtualDisk {
     # Get-View's VIObject parameter set does not accept -Server. The VM object
     # already carries its originating vCenter connection context.
     $vmView = Get-View -VIObject $VM -Property Config.Hardware.Device,Config.Files.VmPathName -ErrorAction Stop
-    $scsiLocation = Get-FreeScsiLocation -VMView $vmView
+    $scsiLocation = Get-FreeScsiLocation -VMView $vmView -ControllerKey $ControllerKey
 
     $backing = New-Object VMware.Vim.VirtualDiskFlatVer2BackingInfo
     $backing.FileName = $targetPath
@@ -1068,6 +1190,7 @@ try {
         }
 
         'Disk' {
+            $selectedController = Select-ScsiController -VM $vm
             [decimal]$capacity = if ($diskSizeWasSupplied) { $DiskSizeGB } else { Read-PositiveDecimal -Prompt 'Enter the new disk size in GB' }
             $datastores = @(Get-AvailableDatastores -VM $vm -Server $server)
             $datastoreArguments = @{ Datastores = $datastores }
@@ -1085,6 +1208,7 @@ try {
             Write-Host "  Storage format: $StorageFormat"
             Write-Host "  Datastore:      $($targetDatastore.Name)"
             Write-Host "  Backing file:   $plannedPath" -ForegroundColor Green
+            Write-Host "  Controller:     $($selectedController.Controller) (next available address: $($selectedController.BusNumber):$($selectedController.FreeUnitNumbers[0]))"
             if ([decimal]$targetDatastore.FreeSpaceGB -lt $capacity) {
                 Write-Warning "The datastore reports only $([math]::Round([decimal]$targetDatastore.FreeSpaceGB, 2)) GB free. Thin provisioning may overcommit storage; Thick formats may fail."
             }
@@ -1093,7 +1217,7 @@ try {
                 return
             }
 
-            $result = Add-UniqueVirtualDisk -VM $vm -Server $server -Datastore $targetDatastore -CapacityGB $capacity -Format $StorageFormat -ExpectedDatastorePath $plannedPath
+            $result = Add-UniqueVirtualDisk -VM $vm -Server $server -Datastore $targetDatastore -CapacityGB $capacity -Format $StorageFormat -ExpectedDatastorePath $plannedPath -ControllerKey $selectedController.ControllerKey
             Write-Host "Successfully added '$($result.HardDisk.Name)' to '$($vm.Name)'." -ForegroundColor Green
             Write-Host "  Backing file: $($result.DatastorePath)"
             Write-Host "  Controller:   $($result.Controller)"
