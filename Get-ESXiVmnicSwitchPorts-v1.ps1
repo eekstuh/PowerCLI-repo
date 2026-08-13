@@ -6,9 +6,9 @@
 Displays ESXi vmnic connections to physical switch ports.
 
 .DESCRIPTION
-Queries vSphere network hints for every physical NIC on the selected ESXi
-hosts. The report shows the local vSphere switch, physical switch name,
-physical switch port, discovery protocol, link state, speed, and management
+Queries vSphere network hints for link-up physical NICs on the selected ESXi
+hosts. The report shows the ESXi cluster, local vSphere switch, physical switch
+name, physical switch port, discovery protocol, link speed, and management
 address when available.
 
 Physical switch details come from CDP or LLDP advertisements received by the
@@ -184,12 +184,42 @@ function Get-LldpParameterValue {
             continue
         }
         $normalizedKey = ([string]$parameter.Key).ToLowerInvariant() -replace '[^a-z0-9]', ''
-        if ($normalizedNames -contains $normalizedKey -and $null -ne $parameter.Value) {
-            return [string]$parameter.Value
+        $isMatchingKey = @($normalizedNames | Where-Object {
+                $normalizedKey -eq $_ -or $normalizedKey.StartsWith($_)
+            }).Count -gt 0
+        if ($isMatchingKey -and $null -ne $parameter.Value) {
+            $value = $parameter.Value
+            if ($value -is [string]) {
+                return $value
+            }
+            if ($value.PSObject.Properties.Name -contains 'InnerText' -and -not [string]::IsNullOrWhiteSpace([string]$value.InnerText)) {
+                return [string]$value.InnerText
+            }
+            if ($value.PSObject.Properties.Name -contains 'Value' -and -not [string]::IsNullOrWhiteSpace([string]$value.Value)) {
+                return [string]$value.Value
+            }
+            return [string]$value
         }
     }
 
     return $null
+}
+
+function Get-VMHostClusterName {
+    param(
+        [Parameter(Mandatory)]
+        [object]$VMHost,
+
+        [Parameter(Mandatory)]
+        [object]$Server
+    )
+
+    $clusters = @(Get-Cluster -VMHost $VMHost -Server $Server -ErrorAction Stop)
+    if ($clusters.Count -eq 0) {
+        return '(standalone)'
+    }
+
+    return [string]$clusters[0].Name
 }
 
 function Test-PnicReference {
@@ -259,27 +289,20 @@ function Get-VMHostVmnicReport {
     )
 
     try {
+        $clusterName = Get-VMHostClusterName -VMHost $VMHost -Server $Server
         $networkSystemId = $VMHost.ExtensionData.ConfigManager.NetworkSystem
         if ($null -eq $networkSystemId) {
             throw 'The host network-system reference is unavailable.'
         }
 
         $networkSystem = Get-View -Id $networkSystemId -Server $Server -Property NetworkInfo.Pnic,NetworkInfo.Vswitch,NetworkInfo.ProxySwitch -ErrorAction Stop
-        $pnics = @($networkSystem.NetworkInfo.Pnic | Sort-Object Device)
+        $pnics = @(
+            $networkSystem.NetworkInfo.Pnic |
+                Where-Object { $null -ne $_.LinkSpeed } |
+                Sort-Object Device
+        )
         if ($pnics.Count -eq 0) {
-            return [pscustomobject]@{
-                ESXiHost         = $VMHost.Name
-                Vmnic            = '(none)'
-                Link            = 'Unknown'
-                SpeedMbps       = $null
-                vSphereSwitch    = '(none)'
-                Protocol         = 'None'
-                PhysicalSwitch   = '(not advertised)'
-                SwitchPort       = '(not advertised)'
-                SwitchMgmtAddress = $null
-                VLAN             = $null
-                Status           = 'No physical NICs were returned.'
-            }
+            return @()
         }
 
         $hints = @($networkSystem.QueryNetworkHint(@($pnics.Device)))
@@ -335,9 +358,10 @@ function Get-VMHostVmnicReport {
 
             [pscustomobject]@{
                 ESXiHost          = $VMHost.Name
+                Cluster           = $clusterName
                 Vmnic             = [string]$pnic.Device
-                Link              = if ($null -ne $pnic.LinkSpeed) { 'Up' } else { 'Down' }
-                SpeedMbps         = if ($null -ne $pnic.LinkSpeed) { [int]$pnic.LinkSpeed.SpeedMb } else { $null }
+                Link              = 'Up'
+                SpeedMbps         = [int]$pnic.LinkSpeed.SpeedMb
                 vSphereSwitch     = Get-VSphereSwitchNames -NetworkInfo $networkSystem.NetworkInfo -Vmnic ([string]$pnic.Device)
                 Protocol          = $protocol
                 PhysicalSwitch    = $physicalSwitch
@@ -349,19 +373,8 @@ function Get-VMHostVmnicReport {
         }
     }
     catch {
-        return [pscustomobject]@{
-            ESXiHost          = $VMHost.Name
-            Vmnic             = '(query failed)'
-            Link              = 'Unknown'
-            SpeedMbps         = $null
-            vSphereSwitch     = '(unknown)'
-            Protocol          = 'Unknown'
-            PhysicalSwitch    = '(unknown)'
-            SwitchPort        = '(unknown)'
-            SwitchMgmtAddress = $null
-            VLAN              = $null
-            Status            = $_.Exception.Message
-        }
+        Write-Warning "Could not query vmnic switch-port information for '$($VMHost.Name)': $($_.Exception.Message)"
+        return @()
     }
 }
 
@@ -381,11 +394,16 @@ try {
         }
     )
 
-    Write-Host "`nvmnic connections:" -ForegroundColor Cyan
-    $report |
-        Select-Object ESXiHost, Vmnic, Link, SpeedMbps, vSphereSwitch, Protocol, PhysicalSwitch, SwitchPort, SwitchMgmtAddress, VLAN, Status |
-        Format-Table -AutoSize -Wrap |
-        Out-Host
+    Write-Host "`nLink-up vmnic connections:" -ForegroundColor Cyan
+    if ($report.Count -eq 0) {
+        Write-Warning 'No link-up vmnics were returned from the selected ESXi hosts.'
+    }
+    else {
+        $report |
+            Select-Object ESXiHost, Cluster, Vmnic, Link, SpeedMbps, vSphereSwitch, Protocol, PhysicalSwitch, SwitchPort, SwitchMgmtAddress, VLAN, Status |
+            Format-Table -AutoSize -Wrap |
+            Out-Host
+    }
 
     if (-not [string]::IsNullOrWhiteSpace($CsvPath)) {
         $resolvedCsvPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($CsvPath)
