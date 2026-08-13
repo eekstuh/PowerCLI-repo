@@ -15,8 +15,8 @@ Physical switch details come from CDP or LLDP advertisements received by the
 ESXi host. If neither protocol supplies neighbor data, the script reports that
 the connection was not advertised instead of attempting to infer it.
 
-When VMHostName is omitted, all ESXi hosts visible through the selected
-vCenter connection are included.
+When VMHostName and ClusterName are both omitted, all ESXi hosts visible
+through the selected vCenter connection are included.
 
 .PARAMETER VIServer
 Optional vCenter Server name. If omitted and exactly one active default
@@ -27,7 +27,12 @@ Optional credential used only when Connect-VIServer is required.
 
 .PARAMETER VMHostName
 Optional exact ESXi host name. Wildcards are not allowed. If omitted, the
-report includes all ESXi hosts.
+report includes the hosts selected by ClusterName, or all hosts when no cluster
+is specified.
+
+.PARAMETER ClusterName
+Optional exact cluster name. Wildcards are not allowed. When specified without
+VMHostName, only ESXi hosts in this cluster are included.
 
 .PARAMETER CsvPath
 Optional path to which the report is exported as a CSV file.
@@ -37,6 +42,9 @@ Optional path to which the report is exported as a CSV file.
 
 .EXAMPLE
 .\Get-ESXiVmnicSwitchPorts-v1.ps1 -VMHostName esx01.example.com
+
+.EXAMPLE
+.\Get-ESXiVmnicSwitchPorts-v1.ps1 -ClusterName 'Production Cluster'
 
 .EXAMPLE
 .\Get-ESXiVmnicSwitchPorts-v1.ps1 -CsvPath C:\Reports\ESXi-vmnic-switch-ports.csv
@@ -58,8 +66,20 @@ param(
                 throw 'VMHostName cannot contain wildcard characters (*, ?, [, or ]).'
             }
             $true
-        })]
+    })]
     [string]$VMHostName,
+
+    [Parameter()]
+    [ValidateScript({
+            if ([string]::IsNullOrWhiteSpace($_)) {
+                throw 'ClusterName cannot be blank.'
+            }
+            if ($_.IndexOfAny([char[]]'*?[]') -ge 0) {
+                throw 'ClusterName cannot contain wildcard characters (*, ?, [, or ]).'
+            }
+            $true
+        })]
+    [string]$ClusterName,
 
     [Parameter()]
     [ValidateScript({
@@ -73,6 +93,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $script:ExitRequested = $false
+
+if (-not [string]::IsNullOrWhiteSpace($VMHostName) -and -not [string]::IsNullOrWhiteSpace($ClusterName)) {
+    throw 'VMHostName and ClusterName cannot be used together. Specify one host, one cluster, or neither for all hosts.'
+}
 
 function Read-ExitAwareInput {
     [OutputType([string])]
@@ -151,7 +175,24 @@ function Get-SelectedVMHosts {
         [object]$Server
     )
 
-    $hosts = @(Get-VMHost -Server $Server -ErrorAction Stop)
+    if (-not [string]::IsNullOrWhiteSpace($ClusterName)) {
+        $matchingClusters = @(
+            Get-Cluster -Server $Server -ErrorAction Stop |
+                Where-Object { $_.Name -ieq $ClusterName }
+        )
+        if ($matchingClusters.Count -eq 0) {
+            throw "No cluster named '$ClusterName' was found on '$($Server.Name)'."
+        }
+        if ($matchingClusters.Count -gt 1) {
+            throw "More than one cluster is named '$ClusterName'. The name must identify exactly one cluster."
+        }
+
+        $hosts = @(Get-VMHost -Location $matchingClusters[0] -Server $Server -ErrorAction Stop)
+    }
+    else {
+        $hosts = @(Get-VMHost -Server $Server -ErrorAction Stop)
+    }
+
     if (-not [string]::IsNullOrWhiteSpace($VMHostName)) {
         $hosts = @($hosts | Where-Object { $_.Name -ieq $VMHostName })
         if ($hosts.Count -eq 0) {
@@ -163,6 +204,9 @@ function Get-SelectedVMHosts {
     }
 
     if ($hosts.Count -eq 0) {
+        if (-not [string]::IsNullOrWhiteSpace($ClusterName)) {
+            throw "No ESXi hosts were found in cluster '$ClusterName'."
+        }
         throw "No ESXi hosts were found on '$($Server.Name)'."
     }
 
