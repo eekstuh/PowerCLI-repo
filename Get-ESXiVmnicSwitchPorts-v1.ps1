@@ -405,8 +405,8 @@ function Get-VMHostVmnicReport {
             }
 
             [pscustomobject]@{
-                ESXiHost          = $VMHost.Name
                 Cluster           = $clusterName
+                ESXiHost          = $VMHost.Name
                 Vmnic             = [string]$pnic.Device
                 Link              = 'Up'
                 SpeedMbps         = [int]$pnic.LinkSpeed.SpeedMb
@@ -448,7 +448,7 @@ try {
     }
     else {
         $report |
-            Select-Object ESXiHost, Cluster, Vmnic, Link, SpeedMbps, vSphereSwitch, Protocol, PhysicalSwitch, SwitchPort, SwitchMgmtAddress, VLAN, Status |
+            Select-Object Cluster, ESXiHost, Vmnic, Link, SpeedMbps, vSphereSwitch, Protocol, PhysicalSwitch, SwitchPort, SwitchMgmtAddress, VLAN, Status |
             Format-Table -AutoSize -Wrap |
             Out-Host
     }
