@@ -397,9 +397,9 @@ function Get-VMHostVmnicReport {
                 Link              = 'Up'
                 SpeedMbps         = [int]$pnic.LinkSpeed.SpeedMb
                 vSphereSwitch     = Get-VSphereSwitchNames -NetworkInfo $networkSystem.NetworkInfo -Vmnic ([string]$pnic.Device)
-                Protocol          = $protocol
                 PhysicalSwitch    = $physicalSwitch
                 SwitchPort        = $switchPort
+                Protocol          = $protocol
             }
         }
     }
@@ -431,7 +431,7 @@ try {
     }
     else {
         $report |
-            Select-Object Cluster, ESXiHost, Vmnic, Link, SpeedMbps, vSphereSwitch, Protocol, PhysicalSwitch, SwitchPort |
+            Select-Object Cluster, ESXiHost, Vmnic, Link, SpeedMbps, vSphereSwitch, PhysicalSwitch, SwitchPort, Protocol |
             Format-Table -AutoSize -Wrap |
             Out-Host
     }
