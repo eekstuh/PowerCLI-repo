@@ -9,7 +9,7 @@ Displays ESXi vmnic connections to physical switch ports.
 Queries vSphere network hints for link-up physical NICs named vmnic<number> on
 the selected ESXi hosts. USB network adapters such as vusb0 are excluded. The
 report shows the ESXi cluster, local vSphere switch, physical switch name,
-physical switch port, discovery protocol, link speed, and VLAN when available.
+physical switch port, discovery protocol, and link speed.
 
 Physical switch details come from CDP or LLDP advertisements received by the
 ESXi host. If neither protocol supplies neighbor data, the script reports that
@@ -363,7 +363,6 @@ function Get-VMHostVmnicReport {
             $protocol = 'None'
             $physicalSwitch = '(not advertised)'
             $switchPort = '(not advertised)'
-            $vlan = $null
             $status = 'No CDP or LLDP neighbor data was received.'
 
             if ($null -ne $hint -and $null -ne $hint.LldpInfo) {
@@ -384,7 +383,6 @@ function Get-VMHostVmnicReport {
                     [string]$cdp.DevId
                 }
                 $switchPort = [string]$cdp.PortId
-                $vlan = $cdp.Vlan
                 $status = 'Neighbor data received.'
             }
 
@@ -405,7 +403,6 @@ function Get-VMHostVmnicReport {
                 Protocol          = $protocol
                 PhysicalSwitch    = $physicalSwitch
                 SwitchPort        = $switchPort
-                VLAN              = $vlan
                 Status            = $status
             }
         }
@@ -438,7 +435,7 @@ try {
     }
     else {
         $report |
-            Select-Object Cluster, ESXiHost, Vmnic, Link, SpeedMbps, vSphereSwitch, Protocol, PhysicalSwitch, SwitchPort, VLAN, Status |
+            Select-Object Cluster, ESXiHost, Vmnic, Link, SpeedMbps, vSphereSwitch, Protocol, PhysicalSwitch, SwitchPort, Status |
             Format-Table -AutoSize -Wrap |
             Out-Host
     }
