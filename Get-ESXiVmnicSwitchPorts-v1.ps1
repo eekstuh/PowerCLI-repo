@@ -363,7 +363,6 @@ function Get-VMHostVmnicReport {
             $protocol = 'None'
             $physicalSwitch = '(not advertised)'
             $switchPort = '(not advertised)'
-            $status = 'No CDP or LLDP neighbor data was received.'
 
             if ($null -ne $hint -and $null -ne $hint.LldpInfo) {
                 $protocol = 'LLDP'
@@ -371,7 +370,6 @@ function Get-VMHostVmnicReport {
                 $systemName = Get-LldpParameterValue -Parameters @($lldp.Parameter) -Names @('System Name', 'SystemName', 'SysName')
                 $physicalSwitch = if (-not [string]::IsNullOrWhiteSpace($systemName)) { $systemName } else { [string]$lldp.ChassisId }
                 $switchPort = [string]$lldp.PortId
-                $status = 'Neighbor data received.'
             }
             elseif ($null -ne $hint -and $null -ne $hint.ConnectedSwitchPort) {
                 $protocol = 'CDP'
@@ -383,7 +381,6 @@ function Get-VMHostVmnicReport {
                     [string]$cdp.DevId
                 }
                 $switchPort = [string]$cdp.PortId
-                $status = 'Neighbor data received.'
             }
 
             if ([string]::IsNullOrWhiteSpace($physicalSwitch)) {
@@ -403,7 +400,6 @@ function Get-VMHostVmnicReport {
                 Protocol          = $protocol
                 PhysicalSwitch    = $physicalSwitch
                 SwitchPort        = $switchPort
-                Status            = $status
             }
         }
     }
@@ -435,7 +431,7 @@ try {
     }
     else {
         $report |
-            Select-Object Cluster, ESXiHost, Vmnic, Link, SpeedMbps, vSphereSwitch, Protocol, PhysicalSwitch, SwitchPort, Status |
+            Select-Object Cluster, ESXiHost, Vmnic, Link, SpeedMbps, vSphereSwitch, Protocol, PhysicalSwitch, SwitchPort |
             Format-Table -AutoSize -Wrap |
             Out-Host
     }
