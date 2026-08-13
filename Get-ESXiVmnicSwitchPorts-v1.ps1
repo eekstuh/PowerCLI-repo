@@ -6,10 +6,11 @@
 Displays ESXi vmnic connections to physical switch ports.
 
 .DESCRIPTION
-Queries vSphere network hints for link-up physical NICs on the selected ESXi
-hosts. The report shows the ESXi cluster, local vSphere switch, physical switch
-name, physical switch port, discovery protocol, link speed, and management
-address when available.
+Queries vSphere network hints for link-up physical NICs named vmnic<number> on
+the selected ESXi hosts. USB network adapters such as vusb0 are excluded. The
+report shows the ESXi cluster, local vSphere switch, physical switch name,
+physical switch port, discovery protocol, link speed, and management address
+when available.
 
 Physical switch details come from CDP or LLDP advertisements received by the
 ESXi host. If neither protocol supplies neighbor data, the script reports that
@@ -342,7 +343,10 @@ function Get-VMHostVmnicReport {
         $networkSystem = Get-View -Id $networkSystemId -Server $Server -Property NetworkInfo.Pnic,NetworkInfo.Vswitch,NetworkInfo.ProxySwitch -ErrorAction Stop
         $pnics = @(
             $networkSystem.NetworkInfo.Pnic |
-                Where-Object { $null -ne $_.LinkSpeed } |
+                Where-Object {
+                    $null -ne $_.LinkSpeed -and
+                    [string]$_.Device -match '^(?i:vmnic\d+)$'
+                } |
                 Sort-Object Device
         )
         if ($pnics.Count -eq 0) {
