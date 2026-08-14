@@ -8,10 +8,11 @@ Expands a Windows drive to a target VMDK size across multiple vSphere VMs.
 .DESCRIPTION
 Processes multiple VM names or wildcard patterns without per-VM approval
 prompts. For each matching VM, the script maps a Windows drive letter to exactly
-one virtual hard disk using Get-VMGuestDisk, expands that VMDK only when it is
-smaller than the requested target capacity, rescans Windows storage through
-VMware Tools, and extends the mapped partition into all contiguous unallocated
-space.
+one virtual hard disk. It prefers PowerCLI guest-volume mapping, then accepts an
+exact guest serial/VMDK UUID match or a unique disk-capacity match. Ambiguous
+matches are never guessed. It expands the VMDK only when it is smaller than the
+requested target capacity, rescans Windows storage through VMware Tools, and
+extends the mapped partition into all contiguous unallocated space.
 
 If a Windows Recovery partition blocks the extension, the VM is skipped unless
 AllowRecoveryPartitionDeletion is explicitly supplied. With that switch, WinRE
@@ -371,6 +372,8 @@ if ($nextPartitions.Count -eq 1) {
     PartitionNumber  = $partition.PartitionNumber
     PartitionSizeGB  = [math]::Round($partition.Size / 1GB, 2)
     WindowsDiskSizeGB = [math]::Round($disk.Size / 1GB, 2)
+    SerialNumber     = [string]$disk.SerialNumber
+    UniqueId         = [string]$disk.UniqueId
     MaximumSizeGB    = [math]::Round($supported.SizeMax / 1GB, 2)
     CanExtend        = (($supported.SizeMax - $partition.Size) -gt 1MB)
     FollowingPartition = $following
@@ -466,30 +469,114 @@ if ($null -ne (Get-Partition -DiskNumber $diskNumber -PartitionNumber $recoveryP
     if (-not [bool]$deleteResult.RecoveryDeleted) { throw 'Recovery partition deletion verification was not returned.' }
 }
 
+function ConvertTo-NormalizedDiskIdentifier {
+    param(
+        [Parameter()]
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) { return '' }
+    $normalized = ([string]$Value).ToUpperInvariant() -replace '[^0-9A-F]', ''
+    if ($normalized.Length -lt 16) { return '' }
+    return $normalized
+}
+
 function Get-HardDiskForWindowsDrive {
     param(
         [Parameter(Mandatory)] [object]$VM,
         [Parameter(Mandatory)] [object]$Server,
-        [Parameter(Mandatory)] [string]$DriveLetter
+        [Parameter(Mandatory)] [string]$DriveLetter,
+        [Parameter(Mandatory)] [object]$DriveState
     )
 
     if ($null -eq (Get-Command Get-VMGuestDisk -ErrorAction SilentlyContinue)) {
         throw 'Get-VMGuestDisk is unavailable. PowerCLI with this cmdlet and vCenter 7.0 or later is required.'
     }
-    $targetPath = "$DriveLetter`:".ToUpperInvariant()
-    $matches = @()
-    foreach ($hardDisk in @(Get-HardDisk -VM $VM -Server $Server -ErrorAction Stop)) {
+
+    $hardDisks = @(Get-HardDisk -VM $VM -Server $Server -ErrorAction Stop)
+    if ($hardDisks.Count -eq 0) { throw "VM '$($VM.Name)' has no virtual hard disks." }
+    $targetPath = ("{0}:" -f $DriveLetter).ToUpperInvariant()
+
+    # Preferred path: retrieve the Windows volume and use PowerCLI's documented
+    # VMGuestDisk-to-HardDisk relationship to resolve its backing VMDK.
+    $directMatches = @()
+    try {
+        $guestVolumes = @(Get-VMGuestDisk -VM $VM -DiskPath "$DriveLetter`:\" -Server $Server -ErrorAction Stop)
+        foreach ($guestVolume in $guestVolumes) {
+            $directMatches += @(Get-HardDisk -VMGuestDisk $guestVolume -ErrorAction Stop)
+        }
+    }
+    catch {
+        $directMatches = @()
+    }
+    $directMatches = @(
+        $directMatches |
+            Where-Object { $hardDisks.Filename -contains $_.Filename } |
+            Sort-Object Filename -Unique
+    )
+    if ($directMatches.Count -eq 1) {
+        return [pscustomobject]@{ HardDisk = $directMatches[0]; Method = 'PowerCLI guest-volume mapping' }
+    }
+    if ($directMatches.Count -gt 1) {
+        throw "Windows drive $DriveLetter`: maps directly to $($directMatches.Count) virtual hard disks. Spanned volumes are not supported."
+    }
+
+    # Some vCenter environments populate only the reverse relationship.
+    $reverseMatches = @()
+    foreach ($hardDisk in $hardDisks) {
         $guestDisks = @(Get-VMGuestDisk -HardDisk $hardDisk -ErrorAction SilentlyContinue)
         $paths = @($guestDisks | ForEach-Object { ([string]$_.DiskPath).Trim().TrimEnd('\').ToUpperInvariant() })
-        if ($paths -contains $targetPath) { $matches += $hardDisk }
+        if ($paths -contains $targetPath) { $reverseMatches += $hardDisk }
     }
-    if ($matches.Count -eq 0) {
-        throw "Windows drive $DriveLetter`: could not be mapped to a virtual hard disk. Verify VMware Tools guest disk mapping data."
+    if ($reverseMatches.Count -eq 1) {
+        return [pscustomobject]@{ HardDisk = $reverseMatches[0]; Method = 'PowerCLI reverse mapping' }
     }
-    if ($matches.Count -gt 1) {
-        throw "Windows drive $DriveLetter`: maps to $($matches.Count) virtual hard disks. Spanned or ambiguous volumes are not supported."
+    if ($reverseMatches.Count -gt 1) {
+        throw "Windows drive $DriveLetter`: maps in reverse to $($reverseMatches.Count) virtual hard disks. Spanned volumes are not supported."
     }
-    return $matches[0]
+
+    # VMware virtual disk serials normally correspond to the VMDK backing UUID.
+    # Only an exact and unique normalized identifier match is accepted.
+    $guestIdentifiers = @(
+        @($DriveState.SerialNumber, $DriveState.UniqueId) |
+            ForEach-Object { ConvertTo-NormalizedDiskIdentifier -Value $_ } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Sort-Object -Unique
+    )
+    $identifierMatches = @(
+        $hardDisks | Where-Object {
+            $backingIdentifiers = @(
+                @($_.ExtensionData.Backing.Uuid, $_.ExtensionData.Backing.LunUuid) |
+                    ForEach-Object { ConvertTo-NormalizedDiskIdentifier -Value $_ } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            @($backingIdentifiers | Where-Object { $guestIdentifiers -contains $_ }).Count -gt 0
+        }
+    )
+    if ($identifierMatches.Count -eq 1) {
+        return [pscustomobject]@{ HardDisk = $identifierMatches[0]; Method = 'Guest serial/VMDK UUID' }
+    }
+    if ($identifierMatches.Count -gt 1) {
+        throw "Windows drive $DriveLetter`: matched more than one VMDK by disk identifier. No disk was selected."
+    }
+
+    # Last fallback: use capacity only when exactly one VMDK has the same size.
+    # Equal-sized disks remain ambiguous and are never guessed.
+    [decimal]$windowsDiskSizeGB = $DriveState.WindowsDiskSizeGB
+    $capacityMatches = @(
+        $hardDisks | Where-Object {
+            [math]::Abs([decimal]$_.CapacityGB - $windowsDiskSizeGB) -le [decimal]0.05
+        }
+    )
+    if ($capacityMatches.Count -eq 1) {
+        return [pscustomobject]@{ HardDisk = $capacityMatches[0]; Method = 'Unique disk-capacity match' }
+    }
+    if ($capacityMatches.Count -gt 1) {
+        throw "Windows drive $DriveLetter`: is on a $windowsDiskSizeGB GB disk, but $($capacityMatches.Count) attached VMDKs have that capacity. Mapping is ambiguous and no disk was selected."
+    }
+
+    throw "Windows drive $DriveLetter`: could not be mapped to a virtual hard disk by PowerCLI guest mapping, disk UUID, or unique capacity."
 }
 
 function New-Result {
@@ -603,8 +690,9 @@ try {
                 throw "Guest family '$guestFamily' is not Windows."
             }
 
-            $hardDisk = Get-HardDiskForWindowsDrive -VM $vm -Server $server -DriveLetter $item.DriveLetter
             $driveState = Get-WindowsDriveState -VM $vm -Credential $guestCredentialToUse -DriveLetter $item.DriveLetter
+            $diskMapping = Get-HardDiskForWindowsDrive -VM $vm -Server $server -DriveLetter $item.DriveLetter -DriveState $driveState
+            $hardDisk = $diskMapping.HardDisk
             $needsVmdkExpansion = ([decimal]$hardDisk.CapacityGB -lt [decimal]$item.TargetCapacityGB)
             if ($needsVmdkExpansion -and @(Get-Snapshot -VM $vm -Server $server -ErrorAction Stop).Count -gt 0) {
                 throw 'The VM has one or more snapshots; VMDK expansion was not attempted.'
@@ -614,6 +702,7 @@ try {
                 Item               = $item
                 VM                 = $vm
                 HardDisk           = $hardDisk
+                MappingMethod      = $diskMapping.Method
                 DriveState         = $driveState
                 NeedsVmdkExpansion = $needsVmdkExpansion
             }
@@ -628,6 +717,7 @@ try {
                 VMName            = $_.Item.VMName
                 Drive             = "$($_.Item.DriveLetter):"
                 HardDisk          = $_.HardDisk.Name
+                Mapping           = $_.MappingMethod
                 CurrentVmdkGB     = $_.HardDisk.CapacityGB
                 TargetVmdkGB      = $_.Item.TargetCapacityGB
                 VmdkAction        = if ($_.NeedsVmdkExpansion) { 'Expand' } else { 'No resize' }
