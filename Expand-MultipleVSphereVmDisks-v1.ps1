@@ -41,7 +41,9 @@ InputCsvPath is not used; if omitted, the script prompts once.
 
 .PARAMETER TargetCapacityGB
 Desired total capacity of the VMDK in GB. A VMDK already at or above this size
-is not reduced. The guest partition is still checked for unallocated space.
+is not reduced. If the VMDK is larger than the target, that VM is skipped
+entirely and its Windows partition is not changed. If it is exactly equal to the
+target, the Windows partition is still checked for unallocated space.
 
 .PARAMETER InputCsvPath
 Optional CSV manifest containing VMName, DriveLetter, and TargetCapacityGB.
@@ -693,6 +695,12 @@ try {
             $driveState = Get-WindowsDriveState -VM $vm -Credential $guestCredentialToUse -DriveLetter $item.DriveLetter
             $diskMapping = Get-HardDiskForWindowsDrive -VM $vm -Server $server -DriveLetter $item.DriveLetter -DriveState $driveState
             $hardDisk = $diskMapping.HardDisk
+            if ([decimal]$hardDisk.CapacityGB -gt [decimal]$item.TargetCapacityGB) {
+                $message = "Current VMDK capacity $($hardDisk.CapacityGB) GB is greater than the requested $($item.TargetCapacityGB) GB target. The VMDK and Windows partition were not changed."
+                $results += New-Result -Item $item -HardDisk $hardDisk.Name -VmdkBeforeGB $hardDisk.CapacityGB -VmdkAfterGB $hardDisk.CapacityGB -PartitionBeforeGB $driveState.PartitionSizeGB -PartitionAfterGB $driveState.PartitionSizeGB -Outcome 'Skipped-TargetBelowCurrent' -Message $message
+                Write-Warning "[$($item.VMName)] $message"
+                continue
+            }
             $needsVmdkExpansion = ([decimal]$hardDisk.CapacityGB -lt [decimal]$item.TargetCapacityGB)
             if ($needsVmdkExpansion -and @(Get-Snapshot -VM $vm -Server $server -ErrorAction Stop).Count -gt 0) {
                 throw 'The VM has one or more snapshots; VMDK expansion was not attempted.'
