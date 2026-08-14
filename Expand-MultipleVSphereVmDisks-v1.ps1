@@ -6,11 +6,12 @@
 Expands a Windows drive to a target VMDK size across multiple vSphere VMs.
 
 .DESCRIPTION
-Processes multiple exact VM names without per-VM approval prompts. For each VM,
-the script maps a Windows drive letter to exactly one virtual hard disk using
-Get-VMGuestDisk, expands that VMDK only when it is smaller than the requested
-target capacity, rescans Windows storage through VMware Tools, and extends the
-mapped partition into all contiguous unallocated space.
+Processes multiple VM names or wildcard patterns without per-VM approval
+prompts. For each matching VM, the script maps a Windows drive letter to exactly
+one virtual hard disk using Get-VMGuestDisk, expands that VMDK only when it is
+smaller than the requested target capacity, rescans Windows storage through
+VMware Tools, and extends the mapped partition into all contiguous unallocated
+space.
 
 If a Windows Recovery partition blocks the extension, the VM is skipped unless
 AllowRecoveryPartitionDeletion is explicitly supplied. With that switch, WinRE
@@ -29,8 +30,9 @@ PowerCLI connection exists, that connection is reused.
 Optional credential used only when Connect-VIServer is required.
 
 .PARAMETER VMName
-One or more exact VM names. Wildcards are not allowed. When omitted, the script
-prompts for a comma-separated list.
+One or more exact VM names or PowerShell wildcard patterns, such as SQL* or
+APP-??. Every matching VM receives the same DriveLetter and TargetCapacityGB.
+When omitted, the script prompts for a comma-separated list of names or patterns.
 
 .PARAMETER DriveLetter
 Windows drive letter to extend on every VM, for example D or D:. Required when
@@ -42,7 +44,8 @@ is not reduced. The guest partition is still checked for unallocated space.
 
 .PARAMETER InputCsvPath
 Optional CSV manifest containing VMName, DriveLetter, and TargetCapacityGB.
-Cannot be combined with VMName, DriveLetter, or TargetCapacityGB.
+VMName entries can be exact names or wildcard patterns. Cannot be combined with
+VMName, DriveLetter, or TargetCapacityGB.
 
 .PARAMETER GuestCredential
 Windows administrator credential used through VMware Tools for all VMs. If
@@ -58,6 +61,9 @@ Optional path for the final per-VM result report. Its parent folder must exist.
 
 .EXAMPLE
 .\Expand-MultipleVSphereVmDisks-v1.ps1 -VMName SQL01,SQL02,SQL03 -DriveLetter D -TargetCapacityGB 500 -GuestCredential (Get-Credential)
+
+.EXAMPLE
+.\Expand-MultipleVSphereVmDisks-v1.ps1 -VMName 'SQL-PROD-*' -DriveLetter D -TargetCapacityGB 500 -GuestCredential (Get-Credential)
 
 .EXAMPLE
 .\Expand-MultipleVSphereVmDisks-v1.ps1 -InputCsvPath .\DiskTargets.csv -GuestCredential (Get-Credential) -CsvReportPath .\DiskExpansionResults.csv
@@ -77,9 +83,6 @@ param(
     [ValidateScript({
             if ([string]::IsNullOrWhiteSpace($_)) {
                 throw 'VMName entries cannot be blank.'
-            }
-            if ($_.IndexOfAny([char[]]'*?[]') -ge 0) {
-                throw 'VMName entries cannot contain wildcard characters (*, ?, [, or ]).'
             }
             $true
         })]
@@ -227,9 +230,6 @@ function Get-WorkItems {
             if ([string]::IsNullOrWhiteSpace([string]$row.VMName)) {
                 throw 'Every input CSV row must contain VMName.'
             }
-            if ([string]$row.VMName -match '[*?\[\]]') {
-                throw "VMName '$($row.VMName)' contains wildcard characters."
-            }
             [decimal]$target = 0
             if (-not [decimal]::TryParse([string]$row.TargetCapacityGB, [ref]$target) -or $target -le 0) {
                 throw "TargetCapacityGB '$($row.TargetCapacityGB)' for '$($row.VMName)' is invalid."
@@ -245,17 +245,11 @@ function Get-WorkItems {
 
     $names = @($VMName)
     while ($names.Count -eq 0) {
-        $value = Read-ExitAwareInput -Prompt 'Enter exact VM names separated by commas'
+        $value = Read-ExitAwareInput -Prompt 'Enter VM names or wildcard patterns separated by commas'
         Stop-IfExitRequested
         $names = @($value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if ($names.Count -eq 0) { Write-Warning 'Enter at least one VM name.' }
     }
-    foreach ($name in $names) {
-        if ($name.IndexOfAny([char[]]'*?[]') -ge 0) {
-            throw "VMName '$name' contains wildcard characters."
-        }
-    }
-
     $selectedDrive = $DriveLetter
     while ([string]::IsNullOrWhiteSpace($selectedDrive)) {
         $selectedDrive = Read-ExitAwareInput -Prompt 'Enter the Windows drive letter to extend (for example D)'
@@ -534,19 +528,49 @@ try {
     }
 
     $server = Get-VCenterConnection
-    $items = @(Get-WorkItems)
+    $requestedItems = @(Get-WorkItems)
+    $allVMs = @(Get-VM -Server $server -ErrorAction Stop)
+    $results = @()
+    $items = @(
+        foreach ($requestedItem in $requestedItems) {
+            try {
+                $pattern = [System.Management.Automation.WildcardPattern]::new(
+                    [string]$requestedItem.VMName,
+                    [System.Management.Automation.WildcardOptions]::IgnoreCase
+                )
+                $matchingVMs = @(
+                    $allVMs |
+                        Where-Object { $pattern.IsMatch([string]$_.Name) } |
+                        Sort-Object Name
+                )
+                if ($matchingVMs.Count -eq 0) {
+                    $results += New-Result -Item $requestedItem -Outcome 'PreflightFailed' -Message "VM name or pattern '$($requestedItem.VMName)' matched no VMs."
+                    continue
+                }
+
+                foreach ($matchingVM in $matchingVMs) {
+                    [pscustomobject]@{
+                        VMName           = [string]$matchingVM.Name
+                        DriveLetter      = $requestedItem.DriveLetter
+                        TargetCapacityGB = $requestedItem.TargetCapacityGB
+                    }
+                }
+            }
+            catch {
+                $results += New-Result -Item $requestedItem -Outcome 'PreflightFailed' -Message "VM wildcard pattern '$($requestedItem.VMName)' is invalid: $($_.Exception.Message)"
+            }
+        }
+    )
     $duplicateTargets = @(
         $items |
             Group-Object { "$(([string]$_.VMName).ToUpperInvariant())|$($_.DriveLetter)" } |
             Where-Object Count -gt 1
     )
     if ($duplicateTargets.Count -gt 0) {
-        throw 'The input contains duplicate VMName and DriveLetter targets. Each VM drive may appear only once per run.'
+        throw 'The VM name patterns overlap and produce duplicate VMName and DriveLetter targets. Each VM drive may appear only once per run.'
     }
-    $guestCredentialToUse = Get-ResolvedGuestCredential
-    $allVMs = @(Get-VM -Server $server -ErrorAction Stop)
+    $guestCredentialToUse = if ($items.Count -gt 0) { Get-ResolvedGuestCredential } else { $null }
     $plans = @()
-    $results = @()
 
     Write-Host "`nPreflight: validating $($items.Count) VM target(s)..." -ForegroundColor Cyan
     foreach ($item in $items) {
