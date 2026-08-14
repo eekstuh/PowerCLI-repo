@@ -569,6 +569,22 @@ try {
     if ($duplicateTargets.Count -gt 0) {
         throw 'The VM name patterns overlap and produce duplicate VMName and DriveLetter targets. Each VM drive may appear only once per run.'
     }
+
+    Write-Host "`nResolved VM targets ($($items.Count)):" -ForegroundColor Cyan
+    if ($items.Count -gt 0) {
+        $items |
+            Sort-Object VMName, DriveLetter |
+            Select-Object VMName,
+                @{ Name = 'Drive'; Expression = { "$($_.DriveLetter):" } },
+                TargetCapacityGB |
+            Format-Table -AutoSize |
+            Out-Host
+        Write-Host 'These VMs will now enter preflight. No per-VM approval will be requested.' -ForegroundColor DarkGray
+    }
+    else {
+        Write-Warning 'No VMs matched the supplied VM names or wildcard patterns.'
+    }
+
     $guestCredentialToUse = if ($items.Count -gt 0) { Get-ResolvedGuestCredential } else { $null }
     $plans = @()
 
