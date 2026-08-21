@@ -141,7 +141,7 @@ function Read-ExitAwareInput {
         [string]$Prompt
     )
 
-    $value = Read-Host -Prompt "$Prompt (type 'exit' to quit)"
+    $value = Read-Host -Prompt "$Prompt (enter 'exit' to cancel)"
     if ($null -eq $value) {
         return $null
     }
@@ -176,10 +176,10 @@ function Get-VCenterConnection {
 
     $serverName = $VIServer
     while ([string]::IsNullOrWhiteSpace($serverName)) {
-        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server name'
+        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
         Stop-IfExitRequested
         if ([string]::IsNullOrWhiteSpace($serverName)) {
-            Write-Warning 'A vCenter Server name is required.'
+            Write-Warning 'A vCenter Server host name or IP address is required.'
         }
     }
 
@@ -187,7 +187,7 @@ function Get-VCenterConnection {
     if ($match.Count -gt 0) { return $match[0] }
     $connectionCredential = $Credential
     if ($null -eq $connectionCredential) {
-        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'"
+        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
         if ($null -eq $connectionCredential) {
             throw 'The vCenter credential prompt was cancelled.'
         }
@@ -210,7 +210,7 @@ function ConvertTo-NormalizedDriveLetter {
 
 function Read-TargetCapacityGB {
     while ($true) {
-        $value = Read-ExitAwareInput -Prompt 'Enter the desired total VMDK capacity in GB'
+        $value = Read-ExitAwareInput -Prompt 'Enter the target virtual disk capacity, in GB'
         Stop-IfExitRequested
         [decimal]$number = 0
         if ([decimal]::TryParse($value, [ref]$number) -and $number -gt 0) {
@@ -252,14 +252,14 @@ function Get-WorkItems {
 
     $names = @($VMName)
     while ($names.Count -eq 0) {
-        $value = Read-ExitAwareInput -Prompt 'Enter VM names or wildcard patterns separated by commas'
+        $value = Read-ExitAwareInput -Prompt 'Enter virtual machine names or wildcard patterns, separated by commas'
         Stop-IfExitRequested
         $names = @($value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if ($names.Count -eq 0) { Write-Warning 'Enter at least one VM name.' }
     }
     $selectedDrive = $DriveLetter
     while ([string]::IsNullOrWhiteSpace($selectedDrive)) {
-        $selectedDrive = Read-ExitAwareInput -Prompt 'Enter the Windows drive letter to extend (for example D)'
+        $selectedDrive = Read-ExitAwareInput -Prompt 'Enter the Windows drive letter to extend (for example, D)'
         Stop-IfExitRequested
         try {
             $selectedDrive = ConvertTo-NormalizedDriveLetter -Value $selectedDrive
@@ -289,7 +289,7 @@ function Get-WorkItems {
 
 function Get-ResolvedGuestCredential {
     if ($null -ne $GuestCredential) { return $GuestCredential }
-    $credential = Get-Credential -Message 'Enter one Windows guest administrator credential for this VM batch'
+    $credential = Get-Credential -Message 'Enter a Windows guest administrator credential to use for this virtual machine batch.'
     if ($null -eq $credential) {
         throw 'Windows guest credentials are required. No changes were made.'
     }

@@ -105,7 +105,7 @@ function Read-ExitAwareInput {
         [string]$Prompt
     )
 
-    $value = Read-Host -Prompt "$Prompt (type 'exit' to quit)"
+    $value = Read-Host -Prompt "$Prompt (enter 'exit' to cancel)"
     if ($null -eq $value) {
         return $null
     }
@@ -150,10 +150,10 @@ function Get-VCenterConnection {
             Write-Host 'More than one active vCenter connection was found:' -ForegroundColor Yellow
             $existingConnections | ForEach-Object { Write-Host "  $($_.Name)" }
         }
-        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server name'
+        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
         Stop-IfExitRequested
         if ([string]::IsNullOrWhiteSpace($serverName)) {
-            Write-Warning 'A vCenter Server name is required.'
+            Write-Warning 'A vCenter Server host name or IP address is required.'
         }
     }
 
@@ -164,7 +164,7 @@ function Get-VCenterConnection {
 
     $connectionCredential = $Credential
     if ($null -eq $connectionCredential) {
-        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'"
+        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
         if ($null -eq $connectionCredential) {
             throw 'The vCenter credential prompt was cancelled.'
         }

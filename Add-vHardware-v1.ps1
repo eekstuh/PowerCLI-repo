@@ -18,7 +18,7 @@ disk is placed on another datastore. For disk additions, the script displays
 each SCSI controller and its attached disks, then prompts for the controller
 that should receive the new disk.
 
-Type 'exit' at any text prompt to stop the script.
+Enter 'exit' at any text prompt to cancel the operation.
 
 .PARAMETER VIServer
 Optional vCenter Server name. When omitted, one active default PowerCLI
@@ -187,7 +187,7 @@ function Write-Banner {
     Write-Host '  vSphere VM Hardware Assistant - Version 1' -ForegroundColor Cyan
     Write-Host '  Add vCPU | Add/remove memory | Add a uniquely named virtual disk' -ForegroundColor Gray
     Write-Host $line -ForegroundColor DarkCyan
-    Write-Host "Type 'exit' at any text prompt to stop.`n" -ForegroundColor DarkGray
+    Write-Host "Enter 'exit' at any text prompt to cancel.`n" -ForegroundColor DarkGray
 }
 
 function Read-ExitAwareInput {
@@ -197,7 +197,7 @@ function Read-ExitAwareInput {
         [string]$Prompt
     )
 
-    $value = Read-Host -Prompt "$Prompt (type 'exit' to quit)"
+    $value = Read-Host -Prompt "$Prompt (enter 'exit' to cancel)"
     if ($null -eq $value) {
         return $null
     }
@@ -256,10 +256,10 @@ function Get-VCenterConnection {
 
     $serverName = $VIServer
     while ([string]::IsNullOrWhiteSpace($serverName)) {
-        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server name'
+        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
         Stop-IfExitRequested
         if ([string]::IsNullOrWhiteSpace($serverName)) {
-            Write-Warning 'A vCenter Server name is required.'
+            Write-Warning 'A vCenter Server host name or IP address is required.'
         }
     }
 
@@ -270,7 +270,7 @@ function Get-VCenterConnection {
 
     $connectionCredential = $Credential
     if ($null -eq $connectionCredential) {
-        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'"
+        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
         if ($null -eq $connectionCredential) {
             throw 'The vCenter credential prompt was cancelled.'
         }
@@ -299,7 +299,7 @@ function Select-ExactVM {
     }
 
     while ($true) {
-        $name = Read-ExitAwareInput -Prompt 'Enter the exact VM name'
+        $name = Read-ExitAwareInput -Prompt 'Enter the exact virtual machine name'
         Stop-IfExitRequested
 
         if ([string]::IsNullOrWhiteSpace($name)) {
@@ -326,12 +326,12 @@ function Select-HardwareAction {
     }
 
     while ($true) {
-        Write-Host "`nChoose the hardware operation:" -ForegroundColor Cyan
+        Write-Host "`nSelect a hardware operation:" -ForegroundColor Cyan
         Write-Host '  1. vCPU'
         Write-Host '  2. Add or remove memory'
         Write-Host '  3. Additional disk'
 
-        $selection = Read-ExitAwareInput -Prompt 'Enter 1, 2, or 3'
+        $selection = Read-ExitAwareInput -Prompt 'Select an option (1, 2, or 3)'
         Stop-IfExitRequested
         switch ($selection.Trim().ToUpperInvariant()) {
             '1'      { return 'CPU' }
@@ -358,11 +358,11 @@ function Select-MemoryOperation {
     }
 
     while ($true) {
-        Write-Host "`nChoose the memory operation:" -ForegroundColor Cyan
+        Write-Host "`nSelect a memory operation:" -ForegroundColor Cyan
         Write-Host '  1. Add memory'
         Write-Host '  2. Remove memory'
 
-        $selection = Read-ExitAwareInput -Prompt 'Enter 1 or 2'
+        $selection = Read-ExitAwareInput -Prompt 'Select an option (1 or 2)'
         Stop-IfExitRequested
         switch ($selection.Trim().ToUpperInvariant()) {
             '1'      { return 'Add' }
@@ -387,12 +387,12 @@ function Read-TargetCpuCount {
     }
 
     while ($true) {
-        Write-Host "`nChoose the desired total vCPU count:" -ForegroundColor Cyan
+        Write-Host "`nSelect the desired total vCPU count:" -ForegroundColor Cyan
         for ($index = 0; $index -lt $availableCpuCounts.Count; $index++) {
             Write-Host "  $($index + 1). $($availableCpuCounts[$index]) vCPUs"
         }
 
-        $selection = Read-ExitAwareInput -Prompt "Enter a menu number or total vCPU count ($($availableCpuCounts -join ', '))"
+        $selection = Read-ExitAwareInput -Prompt "Select a menu option or enter the desired total vCPU count ($($availableCpuCounts -join ', '))"
         Stop-IfExitRequested
 
         [int]$number = 0
@@ -658,7 +658,7 @@ function Select-Datastore {
     $display | Format-Table -AutoSize | Out-Host
 
     while ($true) {
-        $choice = Read-ExitAwareInput -Prompt 'Enter the datastore number for the new disk'
+        $choice = Read-ExitAwareInput -Prompt 'Select the datastore for the new virtual disk by entering its number'
         Stop-IfExitRequested
         [int]$number = 0
         if ([int]::TryParse($choice, [ref]$number) -and $number -ge 1 -and $number -le $Datastores.Count) {
@@ -829,7 +829,7 @@ function Select-ScsiController {
         Out-Host
 
     while ($true) {
-        $selection = Read-ExitAwareInput -Prompt 'Choose the SCSI controller for the new disk (enter its Choice number)'
+        $selection = Read-ExitAwareInput -Prompt 'Select the SCSI controller for the new virtual disk by entering its choice number'
         Stop-IfExitRequested
 
         [int]$choice = 0
@@ -1105,7 +1105,7 @@ try {
             Write-Host "  VM:               $($vm.Name)"
             Write-Host "  vCPU:             $($vm.NumCpu) -> $newCpuCount"
             Write-Host "  Cores per socket: $currentCoresPerSocket -> $newCoresPerSocket"
-            if (-not (Read-YesNo -Prompt 'Apply this vCPU change?')) {
+            if (-not (Read-YesNo -Prompt 'Apply the proposed vCPU configuration?')) {
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
                 return
             }
@@ -1141,7 +1141,7 @@ try {
                     $MemoryGBToAdd
                 }
                 else {
-                    Read-PositiveDecimal -Prompt 'Enter the memory to add in GB'
+                    Read-PositiveDecimal -Prompt 'Enter the amount of memory to add, in GB'
                 }
                 [decimal]$newMemoryGB = [decimal]$vm.MemoryGB + $memoryAmountGB
                 $memoryChangeDescription = 'Add memory'
@@ -1157,7 +1157,7 @@ try {
                         $MemoryGBToRemove
                     }
                     else {
-                        Read-PositiveDecimal -Prompt 'Enter the memory to remove in GB'
+                        Read-PositiveDecimal -Prompt 'Enter the amount of memory to remove, in GB'
                     }
 
                     if ($memoryAmountGB -lt [decimal]$vm.MemoryGB) {
@@ -1180,7 +1180,7 @@ try {
             Write-Host "  VM:        $($vm.Name)"
             Write-Host "  Operation: $memoryChangeDescription"
             Write-Host "  Memory:    $($vm.MemoryGB) GB -> $newMemoryGB GB"
-            if (-not (Read-YesNo -Prompt 'Apply this memory change?')) {
+            if (-not (Read-YesNo -Prompt 'Apply the proposed memory configuration?')) {
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
                 return
             }
@@ -1195,7 +1195,7 @@ try {
 
         'Disk' {
             $selectedController = Select-ScsiController -VM $vm
-            [decimal]$capacity = if ($diskSizeWasSupplied) { $DiskSizeGB } else { Read-PositiveDecimal -Prompt 'Enter the new disk size in GB' }
+            [decimal]$capacity = if ($diskSizeWasSupplied) { $DiskSizeGB } else { Read-PositiveDecimal -Prompt 'Enter the capacity of the new virtual disk, in GB' }
             $datastores = @(Get-AvailableDatastores -VM $vm -Server $server)
             $datastoreArguments = @{ Datastores = $datastores }
             if ($datastoreWasSupplied) {
@@ -1216,7 +1216,7 @@ try {
             if ([decimal]$targetDatastore.FreeSpaceGB -lt $capacity) {
                 Write-Warning "The datastore reports only $([math]::Round([decimal]$targetDatastore.FreeSpaceGB, 2)) GB free. Thin provisioning may overcommit storage; Thick formats may fail."
             }
-            if (-not (Read-YesNo -Prompt 'Create and attach this virtual disk?')) {
+            if (-not (Read-YesNo -Prompt 'Create and attach the proposed virtual disk?')) {
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
                 return
             }

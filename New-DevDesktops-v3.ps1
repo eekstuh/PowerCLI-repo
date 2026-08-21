@@ -46,15 +46,15 @@ function Connect-VCenterIfNeeded {
 
     Write-Warning 'No active vCenter connection was found.'
     while ($true) {
-        $serverName = (Read-Host 'Enter the vCenter Server name').Trim()
+        $serverName = (Read-Host 'Enter the vCenter Server host name or IP address').Trim()
         if ([string]::IsNullOrWhiteSpace($serverName)) {
-            Write-Warning 'The vCenter Server name cannot be blank.'
+            Write-Warning 'The vCenter Server host name or IP address cannot be blank.'
             continue
         }
 
-        $credential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'"
+        $credential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
         if ($null -eq $credential) {
-            Write-Warning 'The credential prompt was cancelled. Enter the vCenter Server name to try again.'
+            Write-Warning 'The credential prompt was cancelled. Enter the vCenter Server host name or IP address to try again.'
             continue
         }
 
@@ -139,13 +139,13 @@ function Read-VmNamePrefix {
 
     while ($true) {
         Write-Host ''
-        Write-Host 'Choose a VM naming convention:' -ForegroundColor Cyan
+        Write-Host 'Select a virtual machine naming convention:' -ForegroundColor Cyan
         Write-Host '  1. 11VMGC'
         Write-Host '  2. 11VMDEV'
         Write-Host '  3. 11VMSAS'
         Write-Host '  4. Custom VM name'
 
-        $selection = (Read-Host 'Enter 1, 2, 3, or 4').Trim().ToUpperInvariant()
+        $selection = (Read-Host 'Select an option (1, 2, 3, or 4)').Trim().ToUpperInvariant()
 
         if ($choices.ContainsKey($selection)) {
             return $choices[$selection]
@@ -158,7 +158,7 @@ function Read-VmNamePrefix {
 function Read-CustomVmName {
 
     while ($true) {
-        $name = (Read-Host 'Enter the custom VM name').Trim()
+        $name = (Read-Host 'Enter a custom virtual machine name').Trim()
 
         if ([string]::IsNullOrWhiteSpace($name)) {
             Write-Warning 'The custom VM name cannot be blank.'
@@ -179,7 +179,7 @@ function Read-VmCount {
     $maximumVmCount = 10
 
     while ($true) {
-        $answer = Read-Host "How many new VMs do you want to create? (maximum $maximumVmCount)"
+        $answer = Read-Host "Enter the number of virtual machines to create (1-$maximumVmCount)"
         $count = 0
 
         if ([int]::TryParse($answer, [ref]$count) -and $count -ge 1 -and $count -le $maximumVmCount) {
@@ -317,7 +317,7 @@ Write-Host "Datacenter:        $DatacenterName"
 Write-Host "VM folder:         $FolderName"
 Write-Host "Power on:          $PowerOnAfterCreate"
 
-$confirmation = (Read-Host 'Do you want to create these VMs? (Y/N)').Trim()
+$confirmation = (Read-Host 'Create the listed virtual machines? [yes/no]').Trim()
 if ($confirmation -notmatch '^(?i:y|yes)$') {
     Write-Host 'Cancelled. No VMs were created.' -ForegroundColor Yellow
     return

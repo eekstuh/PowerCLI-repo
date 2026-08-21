@@ -10,7 +10,7 @@ Prompts for an exact VM name, a disk number, and an amount to add in GB unless
 those values are supplied as parameters. Before disk selection, the script uses
 VMware Tools to retrieve Windows volume labels and maps the reported guest
 volumes to their backing vSphere virtual disks. VM name wildcard characters
-(*, ?, [, ]) are rejected. Type 'exit' at any script prompt to stop; before
+(*, ?, [, ]) are rejected. Enter 'exit' at any script prompt to cancel the remaining workflow; before
 confirmation it makes no changes, and after VMDK expansion it prevents further
 guest changes.
 
@@ -117,7 +117,7 @@ function Write-EnhancedUiBanner {
     Write-Host '  SQL VM Disk Expansion Assistant - Version 1' -ForegroundColor Cyan
     Write-Host '  Guest volume labels | VMDK expansion | Recovery handling' -ForegroundColor Gray
     Write-Host $line -ForegroundColor DarkCyan
-    Write-Host "Type 'exit' at any text prompt to stop.`n" -ForegroundColor DarkGray
+    Write-Host "Enter 'exit' at any text prompt to cancel.`n" -ForegroundColor DarkGray
 }
 
 function Write-EnhancedUiPhase {
@@ -206,7 +206,7 @@ function Read-ExitAwareInput {
         [string]$Prompt
     )
 
-    $value = Read-Host -Prompt "$Prompt (type 'exit' to quit)"
+    $value = Read-Host -Prompt "$Prompt (enter 'exit' to cancel)"
     if ($null -eq $value) {
         return $null
     }
@@ -262,11 +262,11 @@ function Get-VCenterConnection {
 
     $serverName = $VIServer
     while ([string]::IsNullOrWhiteSpace($serverName)) {
-        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server name'
+        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
         Stop-IfExitRequested
 
         if ([string]::IsNullOrWhiteSpace($serverName)) {
-            Write-Warning 'A vCenter Server name is required.'
+            Write-Warning 'A vCenter Server host name or IP address is required.'
         }
     }
 
@@ -278,7 +278,7 @@ function Get-VCenterConnection {
     try {
         $connectionCredential = $Credential
         if ($null -eq $connectionCredential) {
-            $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'"
+            $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
             if ($null -eq $connectionCredential) {
                 throw 'The vCenter credential prompt was cancelled.'
             }
@@ -313,7 +313,7 @@ function Select-ExactVM {
     }
 
     while ($true) {
-        $vmName = Read-ExitAwareInput -Prompt 'Enter the exact VM name'
+        $vmName = Read-ExitAwareInput -Prompt 'Enter the exact virtual machine name'
         Stop-IfExitRequested
 
         if ([string]::IsNullOrWhiteSpace($vmName)) {
@@ -592,7 +592,7 @@ function Select-HardDisk {
     }
 
     while ($true) {
-        $choice = Read-ExitAwareInput -Prompt 'Enter the disk number to expand'
+        $choice = Read-ExitAwareInput -Prompt 'Select the virtual disk to expand by entering its number'
         Stop-IfExitRequested
 
         [int]$diskNumber = 0
@@ -616,7 +616,7 @@ function Read-AdditionalCapacityGB {
     }
 
     while ($true) {
-        $inputValue = Read-ExitAwareInput -Prompt 'Enter the additional capacity in GB'
+        $inputValue = Read-ExitAwareInput -Prompt 'Enter the capacity to add, in GB'
         Stop-IfExitRequested
 
         [decimal]$additionalGB = 0
@@ -662,11 +662,11 @@ function Get-WindowsGuestCredential {
         return $script:ResolvedGuestCredential
     }
 
-    $userName = Read-ExitAwareInput -Prompt 'Enter a Windows guest administrator username'
+    $userName = Read-ExitAwareInput -Prompt 'Enter the Windows guest administrator user name'
     Stop-IfExitRequested
 
     try {
-        $credential = Get-Credential -UserName $userName -Message "Enter the password for $userName (Cancel to continue without Windows guest information)"
+        $credential = Get-Credential -UserName $userName -Message "Enter the password for Windows guest account '$userName'. Select Cancel to continue without guest information."
         if ($null -eq $credential) {
             Write-Warning 'Windows guest authentication was cancelled.'
         }
@@ -805,7 +805,7 @@ function Select-WindowsGuestPartition {
         Out-Host
 
     while ($true) {
-        $diskInput = Read-ExitAwareInput -Prompt 'Enter the Windows disk number that matches the expanded VMDK'
+        $diskInput = Read-ExitAwareInput -Prompt 'Select the Windows disk corresponding to the expanded virtual disk by entering its disk number'
         Stop-IfExitRequested
 
         [int]$guestDiskNumber = 0
@@ -814,7 +814,7 @@ function Select-WindowsGuestPartition {
             continue
         }
 
-        $partitionInput = Read-ExitAwareInput -Prompt "Enter the partition number to extend on Windows disk $guestDiskNumber"
+        $partitionInput = Read-ExitAwareInput -Prompt "Select the partition to extend on Windows disk $guestDiskNumber by entering its partition number"
         Stop-IfExitRequested
 
         [int]$guestPartitionNumber = 0
@@ -936,13 +936,13 @@ function Confirm-WindowsRecoveryPartitionDeletion {
     Write-Warning "A $($RecoveryPartition.SizeGB) GB Windows Recovery partition (partition $($RecoveryPartition.PartitionNumber)) immediately follows the selected partition."
     Write-Warning 'Deleting it is permanent and disables Windows Recovery Environment (WinRE). The script will not recreate the Recovery partition or re-enable WinRE.'
 
-    if (-not (Read-YesNo -Prompt 'Do you authorize deletion of this Recovery partition?')) {
+    if (-not (Read-YesNo -Prompt 'Do you authorize permanent deletion of this Windows Recovery partition?')) {
         Write-Host 'The Recovery partition and Windows partition were not changed.' -ForegroundColor Yellow
         return $false
     }
 
     while ($true) {
-        $confirmation = Read-ExitAwareInput -Prompt "Type DELETE RECOVERY to permanently delete Recovery partition $($RecoveryPartition.PartitionNumber)"
+        $confirmation = Read-ExitAwareInput -Prompt "To confirm permanent deletion, enter DELETE RECOVERY for Windows Recovery partition $($RecoveryPartition.PartitionNumber)"
         Stop-IfExitRequested
 
         if ($confirmation -ceq 'DELETE RECOVERY') {
@@ -966,13 +966,13 @@ function Confirm-WindowsBlockingPartitionDeletion {
     Write-Warning "Partition $($BlockingPartition.PartitionNumber) ($($BlockingPartition.Type), $($BlockingPartition.SizeGB) GB) immediately follows the selected partition and blocks extension."
     Write-Warning 'Deleting it is permanent and removes all data on that partition.'
 
-    if (-not (Read-YesNo -Prompt 'Do you authorize deletion of this blocking partition?')) {
+    if (-not (Read-YesNo -Prompt 'Do you authorize permanent deletion of this blocking partition?')) {
         Write-Host 'The blocking partition and Windows partition were not changed.' -ForegroundColor Yellow
         return $false
     }
 
     while ($true) {
-        $confirmation = Read-ExitAwareInput -Prompt "Type DELETE PARTITION to permanently delete partition $($BlockingPartition.PartitionNumber)"
+        $confirmation = Read-ExitAwareInput -Prompt "To confirm permanent deletion, enter DELETE PARTITION for partition $($BlockingPartition.PartitionNumber)"
         Stop-IfExitRequested
 
         if ($confirmation -ceq 'DELETE PARTITION') {
@@ -1189,7 +1189,7 @@ function Invoke-WindowsGuestPartitionExtension {
     }
 
     $partitions = Get-WindowsGuestPartitions -VM $VM -Credential $credential
-    if (-not (Read-YesNo -Prompt 'Continue and select a Windows partition to extend?')) {
+    if (-not (Read-YesNo -Prompt 'Proceed to select a Windows partition for extension?')) {
         Write-Host 'No guest partition was changed.' -ForegroundColor Yellow
         return
     }
@@ -1233,7 +1233,7 @@ function Invoke-WindowsGuestPartitionExtension {
     }
 
     Write-Host "The selected Windows partition can grow from $($extensionState.CurrentSizeGB) GB to $($extensionState.MaximumSizeGB) GB." -ForegroundColor Cyan
-    if (-not (Read-YesNo -Prompt 'Extend this Windows partition now?')) {
+    if (-not (Read-YesNo -Prompt 'Extend the selected Windows partition now?')) {
         Write-Host 'No guest partition was changed.' -ForegroundColor Yellow
         return
     }
@@ -1301,14 +1301,14 @@ try {
     Write-Host "  Capacity: $currentCapacityGB GB -> $newCapacityGB GB"
 
     while ($true) {
-        $confirmation = Read-ExitAwareInput -Prompt "Type YES to expand '$($disk.Name)' on '$($vm.Name)'"
+        $confirmation = Read-ExitAwareInput -Prompt "To confirm, enter YES to expand '$($disk.Name)' on '$($vm.Name)'"
         Stop-IfExitRequested
 
         if ($confirmation -ceq 'YES') {
             break
         }
 
-        Write-Warning "The change was not confirmed. Type YES to proceed, or 'exit' to cancel."
+        Write-Warning "The change has not been confirmed. Enter YES to proceed, or 'exit' to cancel."
     }
 
     Write-EnhancedUiStatus -Type Action -Message "Expanding $($disk.Name) to $newCapacityGB GB in vSphere..."
@@ -1319,7 +1319,7 @@ try {
     Write-EnhancedUiStatus -Type Success -Message 'The vSphere virtual disk expansion completed.'
 
     Write-EnhancedUiPhase -Progress '3/4' -Title 'Optional Windows guest partition extension'
-    if (Read-YesNo -Prompt 'Would you like to inspect and extend a Windows guest partition now?') {
+    if (Read-YesNo -Prompt 'Would you like to review and extend a Windows guest partition?') {
         Invoke-WindowsGuestPartitionExtension -VM $vm
     }
     else {
