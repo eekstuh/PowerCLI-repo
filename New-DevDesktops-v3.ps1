@@ -10,6 +10,7 @@
   - Does NOT rely on New-VM output objects
   - Uses real datastore instead of DatastoreCluster object
   - Sequential provisioning
+  - Reuses an active vCenter connection or prompts to establish one
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -27,6 +28,46 @@ param(
 # ------------------------------------------------------------
 # FUNCTIONS
 # ------------------------------------------------------------
+
+function Connect-VCenterIfNeeded {
+
+    $connectionCandidates = @($global:DefaultVIServers) + @($global:DefaultVIServer)
+    $activeConnections = @(
+        $connectionCandidates |
+            Where-Object { $null -ne $_ -and $_.IsConnected } |
+            Sort-Object Name -Unique
+    )
+
+    if ($activeConnections.Count -gt 0) {
+        $connectionNames = $activeConnections.Name -join ', '
+        Write-Host "Using existing vCenter connection: $connectionNames" -ForegroundColor Green
+        return
+    }
+
+    Write-Warning 'No active vCenter connection was found.'
+    while ($true) {
+        $serverName = (Read-Host 'Enter the vCenter Server name').Trim()
+        if ([string]::IsNullOrWhiteSpace($serverName)) {
+            Write-Warning 'The vCenter Server name cannot be blank.'
+            continue
+        }
+
+        $credential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'"
+        if ($null -eq $credential) {
+            Write-Warning 'The credential prompt was cancelled. Enter the vCenter Server name to try again.'
+            continue
+        }
+
+        try {
+            [void](Connect-VIServer -Server $serverName -Credential $credential -ErrorAction Stop)
+            Write-Host "Connected to vCenter Server: $serverName" -ForegroundColor Green
+            return
+        }
+        catch {
+            Write-Warning "Could not connect to vCenter Server '$serverName': $($_.Exception.Message)"
+        }
+    }
+}
 
 function Get-ClusterRootResourcePool {
 
@@ -226,6 +267,8 @@ function Get-NextVmNames {
 # ------------------------------------------------------------
 # BUILD PLAN
 # ------------------------------------------------------------
+
+Connect-VCenterIfNeeded
 
 $nameSelection = Read-VmNamePrefix
 $targetCluster = Get-Cluster -Name $ClusterName -ErrorAction Stop
