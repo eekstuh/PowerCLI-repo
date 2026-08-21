@@ -571,7 +571,7 @@ function Select-HardDisk {
             Number                     = $index + 1
             Disk                       = $disks[$index].Name
             GuestVolumes               = Get-GuestVolumeDisplayForHardDisk -HardDisk $disks[$index] -VolumeLabelsByPath $VolumeLabelsByPath
-            CapacityGB                 = [decimal]$disks[$index].CapacityGB
+            HardDiskCapacityGB         = [decimal]$disks[$index].CapacityGB
             DatastoreFreeGB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.FreeSpaceGB } else { 'Unavailable' }
             DatastoreProvisionedGB     = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.ProvisionedSpaceGB } else { 'Unavailable' }
             DatastoreFile              = $disks[$index].Filename
