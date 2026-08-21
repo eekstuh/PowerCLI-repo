@@ -495,7 +495,7 @@ function Get-GuestVolumeDisplayForHardDisk {
     return $displayValues -join '; '
 }
 
-function Get-HardDiskDatastoreFreeSpaceGB {
+function Get-HardDiskDatastoreSpace {
     param(
         [Parameter(Mandatory)]
         [object]$HardDisk,
@@ -511,7 +511,17 @@ function Get-HardDiskDatastoreFreeSpaceGB {
 
     $datastoreId = "Datastore-$($datastoreReference.Value)"
     $datastore = Get-Datastore -Id $datastoreId -Server $Server -ErrorAction Stop
-    return [math]::Round([decimal]$datastore.FreeSpaceGB, 2)
+    [decimal]$freeSpaceGB = $datastore.FreeSpaceGB
+    [decimal]$usedSpaceGB = [decimal]$datastore.CapacityGB - $freeSpaceGB
+    [decimal]$uncommittedSpaceGB = 0
+    if ($null -ne $datastore.ExtensionData.Summary.Uncommitted) {
+        $uncommittedSpaceGB = [decimal]$datastore.ExtensionData.Summary.Uncommitted / 1GB
+    }
+
+    return [pscustomobject]@{
+        FreeSpaceGB        = [math]::Round($freeSpaceGB, 2)
+        ProvisionedSpaceGB = [math]::Round($usedSpaceGB + $uncommittedSpaceGB, 2)
+    }
 }
 
 function Select-HardDisk {
@@ -549,21 +559,22 @@ function Select-HardDisk {
 
     Write-Host "`nVirtual disks on '$($VM.Name)':" -ForegroundColor Cyan
     $diskList = for ($index = 0; $index -lt $disks.Count; $index++) {
-        $datastoreFreeGB = try {
-            Get-HardDiskDatastoreFreeSpaceGB -HardDisk $disks[$index] -Server $Server
+        $datastoreSpace = try {
+            Get-HardDiskDatastoreSpace -HardDisk $disks[$index] -Server $Server
         }
         catch {
-            Write-Warning "Could not retrieve datastore free space for '$($disks[$index].Name)': $($_.Exception.Message)"
+            Write-Warning "Could not retrieve datastore space information for '$($disks[$index].Name)': $($_.Exception.Message)"
             $null
         }
 
         [pscustomobject]@{
-            Number          = $index + 1
-            Disk            = $disks[$index].Name
-            GuestVolumes    = Get-GuestVolumeDisplayForHardDisk -HardDisk $disks[$index] -VolumeLabelsByPath $VolumeLabelsByPath
-            CapacityGB      = [decimal]$disks[$index].CapacityGB
-            DatastoreFreeGB = if ($null -ne $datastoreFreeGB) { [decimal]$datastoreFreeGB } else { 'Unavailable' }
-            DatastoreFile   = $disks[$index].Filename
+            Number                     = $index + 1
+            Disk                       = $disks[$index].Name
+            GuestVolumes               = Get-GuestVolumeDisplayForHardDisk -HardDisk $disks[$index] -VolumeLabelsByPath $VolumeLabelsByPath
+            CapacityGB                 = [decimal]$disks[$index].CapacityGB
+            DatastoreFreeGB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.FreeSpaceGB } else { 'Unavailable' }
+            DatastoreProvisionedGB     = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.ProvisionedSpaceGB } else { 'Unavailable' }
+            DatastoreFile              = $disks[$index].Filename
         }
     }
     $diskList | Format-Table -AutoSize | Out-Host
