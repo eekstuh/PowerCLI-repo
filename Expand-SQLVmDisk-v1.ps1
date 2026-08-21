@@ -495,6 +495,25 @@ function Get-GuestVolumeDisplayForHardDisk {
     return $displayValues -join '; '
 }
 
+function Get-HardDiskDatastoreFreeSpaceGB {
+    param(
+        [Parameter(Mandatory)]
+        [object]$HardDisk,
+
+        [Parameter(Mandatory)]
+        [object]$Server
+    )
+
+    $datastoreReference = $HardDisk.ExtensionData.Backing.Datastore
+    if ($null -eq $datastoreReference -or [string]::IsNullOrWhiteSpace([string]$datastoreReference.Value)) {
+        return $null
+    }
+
+    $datastoreId = "Datastore-$($datastoreReference.Value)"
+    $datastore = Get-Datastore -Id $datastoreId -Server $Server -ErrorAction Stop
+    return [math]::Round([decimal]$datastore.FreeSpaceGB, 2)
+}
+
 function Select-HardDisk {
     param(
         [Parameter(Mandatory)]
@@ -530,12 +549,21 @@ function Select-HardDisk {
 
     Write-Host "`nVirtual disks on '$($VM.Name)':" -ForegroundColor Cyan
     $diskList = for ($index = 0; $index -lt $disks.Count; $index++) {
+        $datastoreFreeGB = try {
+            Get-HardDiskDatastoreFreeSpaceGB -HardDisk $disks[$index] -Server $Server
+        }
+        catch {
+            Write-Warning "Could not retrieve datastore free space for '$($disks[$index].Name)': $($_.Exception.Message)"
+            $null
+        }
+
         [pscustomobject]@{
-            Number       = $index + 1
-            Disk         = $disks[$index].Name
-            GuestVolumes = Get-GuestVolumeDisplayForHardDisk -HardDisk $disks[$index] -VolumeLabelsByPath $VolumeLabelsByPath
-            CapacityGB   = [decimal]$disks[$index].CapacityGB
-            DatastoreFile = $disks[$index].Filename
+            Number          = $index + 1
+            Disk            = $disks[$index].Name
+            GuestVolumes    = Get-GuestVolumeDisplayForHardDisk -HardDisk $disks[$index] -VolumeLabelsByPath $VolumeLabelsByPath
+            CapacityGB      = [decimal]$disks[$index].CapacityGB
+            DatastoreFreeGB = if ($null -ne $datastoreFreeGB) { [decimal]$datastoreFreeGB } else { 'Unavailable' }
+            DatastoreFile   = $disks[$index].Filename
         }
     }
     $diskList | Format-Table -AutoSize | Out-Host
