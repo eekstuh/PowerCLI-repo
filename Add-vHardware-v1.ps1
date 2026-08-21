@@ -268,11 +268,15 @@ function Get-VCenterConnection {
         return $matchingConnection[0]
     }
 
-    if ($null -ne $Credential) {
-        return Connect-VIServer -Server $serverName -Credential $Credential -ErrorAction Stop
+    $connectionCredential = $Credential
+    if ($null -eq $connectionCredential) {
+        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'"
+        if ($null -eq $connectionCredential) {
+            throw 'The vCenter credential prompt was cancelled.'
+        }
     }
 
-    return Connect-VIServer -Server $serverName -ErrorAction Stop
+    return Connect-VIServer -Server $serverName -Credential $connectionCredential -ErrorAction Stop
 }
 
 function Select-ExactVM {

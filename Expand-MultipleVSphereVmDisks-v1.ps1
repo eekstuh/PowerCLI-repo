@@ -185,10 +185,14 @@ function Get-VCenterConnection {
 
     $match = @($connections | Where-Object { $_.Name -ieq $serverName })
     if ($match.Count -gt 0) { return $match[0] }
-    if ($null -ne $Credential) {
-        return Connect-VIServer -Server $serverName -Credential $Credential -ErrorAction Stop
+    $connectionCredential = $Credential
+    if ($null -eq $connectionCredential) {
+        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'"
+        if ($null -eq $connectionCredential) {
+            throw 'The vCenter credential prompt was cancelled.'
+        }
     }
-    return Connect-VIServer -Server $serverName -ErrorAction Stop
+    return Connect-VIServer -Server $serverName -Credential $connectionCredential -ErrorAction Stop
 }
 
 function ConvertTo-NormalizedDriveLetter {
