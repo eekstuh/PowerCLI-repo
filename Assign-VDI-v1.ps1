@@ -56,13 +56,13 @@ accepts Y, Yes, True, 1, N, No, False, or 0. Interactive user fields cannot be
 combined with InputCsvPath.
 
 .EXAMPLE
-.\Assign-DevDesktop-v1.ps1
+.\Assign-VDI-v1.ps1
 
 .EXAMPLE
-.\Assign-DevDesktop-v1.ps1 -NamingConvention 11VMDEV -FirstName Jane -LastName Doe -ADAccountName jdoe -Consultant $false
+.\Assign-VDI-v1.ps1 -NamingConvention 11VMDEV -FirstName Jane -LastName Doe -ADAccountName jdoe -Consultant $false
 
 .EXAMPLE
-.\Assign-DevDesktop-v1.ps1 -InputCsvPath .\DesktopAssignments.csv
+.\Assign-VDI-v1.ps1 -InputCsvPath .\DesktopAssignments.csv
 
 The CSV format is:
 NamingConvention,FirstName,LastName,ADAccountName,Consultant
@@ -118,7 +118,7 @@ $consultantWasSupplied = $PSBoundParameters.ContainsKey('Consultant')
 function Write-Banner {
     $line = '=' * 76
     Write-Host "`n$line" -ForegroundColor DarkCyan
-    Write-Host '  Developer Desktop Assignment Assistant - Version 1' -ForegroundColor Cyan
+    Write-Host '  VDI Assignment Assistant - Version 1' -ForegroundColor Cyan
     Write-Host '  Select desktop | Grant Remote Desktop access | Rename in vSphere' -ForegroundColor Gray
     Write-Host $line -ForegroundColor DarkCyan
     Write-Host "Enter 'exit' at any text prompt to cancel.`n" -ForegroundColor DarkGray
