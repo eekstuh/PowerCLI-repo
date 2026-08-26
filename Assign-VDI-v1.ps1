@@ -17,6 +17,10 @@ guest operation succeeds. The Windows computer name is not changed.
 If an existing VM name already ends with the same AD full name, the script lists
 the matching VM or VMs and asks whether another VDI should be assigned.
 
+After each non-CSV assignment, the script asks whether another VDI should be
+assigned and returns to the naming-convention menu when confirmed. CSV mode
+processes the imported rows once and does not display this repeat prompt.
+
 Enter 'exit' at any text prompt to cancel the remaining workflow.
 
 .PARAMETER VIServer
@@ -1198,24 +1202,27 @@ try {
     $cluster = Get-ExactCluster -Server $server -Name $ClusterName
     Write-Host "Using cluster '$($cluster.Name)'." -ForegroundColor Green
     Initialize-ActiveDirectoryModule
-    $workItems = @(Get-AssignmentWorkItems)
     $results = @()
+    $continueAssignmentSession = $true
 
-    for ($index = 0; $index -lt $workItems.Count; $index++) {
-        $workItem = $workItems[$index]
-        $itemLabel = if ($null -ne $workItem.RowNumber) { "CSV row $($workItem.RowNumber)" } else { 'Interactive assignment' }
-        Write-Host "`n[$($index + 1)/$($workItems.Count)] Processing $itemLabel..." -ForegroundColor Cyan
+    while ($continueAssignmentSession) {
+        $workItems = @(Get-AssignmentWorkItems)
 
-        if (-not [string]::IsNullOrWhiteSpace([string]$workItem.ValidationError)) {
-            Write-Warning $workItem.ValidationError
-            $results += New-AssignmentResult -WorkItem $workItem -Outcome 'InputFailed' -Message $workItem.ValidationError
-            continue
-        }
+        for ($index = 0; $index -lt $workItems.Count; $index++) {
+            $workItem = $workItems[$index]
+            $itemLabel = if ($null -ne $workItem.RowNumber) { "CSV row $($workItem.RowNumber)" } else { 'Interactive assignment' }
+            Write-Host "`n[$($index + 1)/$($workItems.Count)] Processing $itemLabel..." -ForegroundColor Cyan
 
-        $selectedVM = $null
-        $targetVMName = ''
-        $guestResult = $null
-        try {
+            if (-not [string]::IsNullOrWhiteSpace([string]$workItem.ValidationError)) {
+                Write-Warning $workItem.ValidationError
+                $results += New-AssignmentResult -WorkItem $workItem -Outcome 'InputFailed' -Message $workItem.ValidationError
+                continue
+            }
+
+            $selectedVM = $null
+            $targetVMName = ''
+            $guestResult = $null
+            try {
             $personName = [string]$workItem.FullName
             $assignmentLabel = if ([bool]$workItem.Consultant) { "Consultant $personName" } else { $personName }
             $allVirtualMachines = @(Get-VM -Location $cluster -Server $server -ErrorAction Stop)
@@ -1309,12 +1316,27 @@ try {
             $script:CompletedAssignments++
             Write-Host "Assignment completed successfully for '$personName' on '$targetVMName'." -ForegroundColor Green
             $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Completed' -Message 'Remote Desktop access and vSphere rename were verified.' -VMName $targetVMName -ResolvedADAccount $guestResult.Account
+            }
+            catch {
+                $message = $_.Exception.Message
+                $failedUser = if ([string]::IsNullOrWhiteSpace([string]$workItem.FullName)) { $workItem.ADAccountName } else { $workItem.FullName }
+                Write-Warning "Assignment failed for '$failedUser': $message"
+                $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Failed' -Message $message -VMName $(if ($null -ne $selectedVM) { $selectedVM.Name } else { '' }) -ResolvedADAccount $(if ($null -ne $guestResult) { [string]$guestResult.Account } else { '' })
+            }
         }
-        catch {
-            $message = $_.Exception.Message
-            $failedUser = if ([string]::IsNullOrWhiteSpace([string]$workItem.FullName)) { $workItem.ADAccountName } else { $workItem.FullName }
-            Write-Warning "Assignment failed for '$failedUser': $message"
-            $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Failed' -Message $message -VMName $(if ($null -ne $selectedVM) { $selectedVM.Name } else { '' }) -ResolvedADAccount $(if ($null -ne $guestResult) { [string]$guestResult.Account } else { '' })
+
+        if ($script:InvocationParameterSet -eq 'Interactive') {
+            $continueAssignmentSession = Read-YesNo -Prompt 'Would you like to assign another VDI to a user account?'
+            if ($continueAssignmentSession) {
+                $namingConventionWasSupplied = $false
+                $vmNameWasSupplied = $false
+                $adAccountWasSupplied = $false
+                Write-Banner
+                Write-Host "Continuing with vCenter Server '$($server.Name)' and cluster '$($cluster.Name)'." -ForegroundColor Green
+            }
+        }
+        else {
+            $continueAssignmentSession = $false
         }
     }
 
