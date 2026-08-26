@@ -32,7 +32,13 @@ operations.
 Cluster containing the developer desktop virtual machines.
 
 .PARAMETER NamingConvention
-Virtual machine naming convention: 11VMGC, 11VMDEV, or 11VMSAS.
+Virtual machine naming convention: 11VMGC, 11VMDEV, 11VMSAS, or SPECIFIC. The
+SPECIFIC option assigns an exact VM name instead of selecting from the numbered
+pool above the latest assignment cutoff.
+
+.PARAMETER VMName
+Exact virtual machine name to use with NamingConvention SPECIFIC. If omitted in
+interactive mode, the script prompts for it.
 
 .PARAMETER FirstName
 User's first name as it should appear in the vSphere inventory name.
@@ -53,7 +59,8 @@ assigned virtual machine name.
 Optional path to a CSV file for assigning multiple users. Required columns are
 NamingConvention, FirstName, LastName, ADAccountName, and Consultant. Consultant
 accepts Y, Yes, True, 1, N, No, False, or 0. Interactive user fields cannot be
-combined with InputCsvPath.
+combined with InputCsvPath. For a SPECIFIC row, include a VMName column and the
+exact virtual machine name.
 
 .EXAMPLE
 .\Assign-VDI-v1.ps1
@@ -62,12 +69,15 @@ combined with InputCsvPath.
 .\Assign-VDI-v1.ps1 -NamingConvention 11VMDEV -FirstName Jane -LastName Doe -ADAccountName jdoe -Consultant $false
 
 .EXAMPLE
+.\Assign-VDI-v1.ps1 -NamingConvention SPECIFIC -VMName 11VMDEV501 -FirstName Jane -LastName Doe -ADAccountName jdoe -Consultant $false
+
+.EXAMPLE
 .\Assign-VDI-v1.ps1 -InputCsvPath .\DesktopAssignments.csv
 
 The CSV format is:
-NamingConvention,FirstName,LastName,ADAccountName,Consultant
-11VMGC,Jane,Doe,jdoe,No
-11VMDEV,John,Smith,CONTOSO\jsmith,Yes
+NamingConvention,VMName,FirstName,LastName,ADAccountName,Consultant
+11VMGC,,Jane,Doe,jdoe,No
+SPECIFIC,11VMDEV501,John,Smith,CONTOSO\jsmith,Yes
 #>
 [CmdletBinding(DefaultParameterSetName = 'Interactive', SupportsShouldProcess)]
 param(
@@ -84,8 +94,11 @@ param(
     [string]$ClusterName = 'Developer Desktops',
 
     [Parameter(ParameterSetName = 'Interactive')]
-    [ValidateSet('11VMGC', '11VMDEV', '11VMSAS')]
+    [ValidateSet('11VMGC', '11VMDEV', '11VMSAS', 'SPECIFIC', 'CUSTOM')]
     [string]$NamingConvention,
+
+    [Parameter(ParameterSetName = 'Interactive')]
+    [string]$VMName,
 
     [Parameter(ParameterSetName = 'Interactive')]
     [string]$FirstName,
@@ -110,6 +123,7 @@ $script:CompletedAssignments = 0
 $script:ResolvedGuestCredential = $null
 $script:InvocationParameterSet = $PSCmdlet.ParameterSetName
 $namingConventionWasSupplied = $PSBoundParameters.ContainsKey('NamingConvention')
+$vmNameWasSupplied = $PSBoundParameters.ContainsKey('VMName')
 $firstNameWasSupplied = $PSBoundParameters.ContainsKey('FirstName')
 $lastNameWasSupplied = $PSBoundParameters.ContainsKey('LastName')
 $adAccountWasSupplied = $PSBoundParameters.ContainsKey('ADAccountName')
@@ -247,7 +261,10 @@ function Get-ExactCluster {
 
 function Read-NamingConvention {
     if ($namingConventionWasSupplied) {
-        return $NamingConvention
+        if ($NamingConvention -ieq 'CUSTOM') {
+            return 'SPECIFIC'
+        }
+        return $NamingConvention.ToUpperInvariant()
     }
 
     while ($true) {
@@ -255,8 +272,9 @@ function Read-NamingConvention {
         Write-Host '  1. 11VMGC'
         Write-Host '  2. 11VMDEV'
         Write-Host '  3. 11VMSAS'
+        Write-Host '  4. Specific VM name'
 
-        $selection = Read-ExitAwareInput -Prompt 'Select an option (1, 2, or 3)'
+        $selection = Read-ExitAwareInput -Prompt 'Select an option (1, 2, 3, or 4)'
         Stop-IfExitRequested
         switch ($selection.Trim().ToUpperInvariant()) {
             '1'       { return '11VMGC' }
@@ -265,7 +283,10 @@ function Read-NamingConvention {
             '11VMDEV' { return '11VMDEV' }
             '3'       { return '11VMSAS' }
             '11VMSAS' { return '11VMSAS' }
-            default { Write-Warning 'Select option 1, 2, or 3.' }
+            '4'        { return 'SPECIFIC' }
+            'SPECIFIC' { return 'SPECIFIC' }
+            'CUSTOM'   { return 'SPECIFIC' }
+            default { Write-Warning 'Select option 1, 2, 3, or 4.' }
         }
     }
 }
@@ -338,6 +359,15 @@ function ConvertTo-ConsultantValue {
 function Get-AssignmentWorkItems {
     if ($script:InvocationParameterSet -eq 'Interactive') {
         $selectedPrefix = Read-NamingConvention
+        $requestedVMName = if ($selectedPrefix -eq 'SPECIFIC') {
+            Resolve-RequiredText -InitialValue $VMName -WasSupplied $vmNameWasSupplied -Prompt 'Enter the exact virtual machine name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
+        }
+        else {
+            if ($vmNameWasSupplied) {
+                throw 'VMName can be used only when NamingConvention is SPECIFIC or CUSTOM.'
+            }
+            ''
+        }
         $resolvedFirstName = Resolve-RequiredText -InitialValue $FirstName -WasSupplied $firstNameWasSupplied -Prompt "Enter the user's first name" -FieldName 'First name' -RejectAssignmentDelimiter
         $resolvedLastName = Resolve-RequiredText -InitialValue $LastName -WasSupplied $lastNameWasSupplied -Prompt "Enter the user's last name" -FieldName 'Last name' -RejectAssignmentDelimiter
         $resolvedADAccount = Resolve-RequiredText -InitialValue $ADAccountName -WasSupplied $adAccountWasSupplied -Prompt "Enter the user's Active Directory account name" -FieldName 'Active Directory account name'
@@ -352,6 +382,7 @@ function Get-AssignmentWorkItems {
             [pscustomobject]@{
                 RowNumber        = $null
                 NamingConvention = $selectedPrefix
+                RequestedVMName  = $requestedVMName
                 FirstName        = $resolvedFirstName
                 LastName         = $resolvedLastName
                 ADAccountName    = $resolvedADAccount
@@ -384,13 +415,22 @@ function Get-AssignmentWorkItems {
         $rowNumber = $index + 2
         try {
             $prefix = ([string]$row.NamingConvention).Trim().ToUpperInvariant()
-            if ($prefix -notin @('11VMGC', '11VMDEV', '11VMSAS')) {
-                throw "CSV row $rowNumber has an invalid NamingConvention '$($row.NamingConvention)'. Use 11VMGC, 11VMDEV, or 11VMSAS."
+            if ($prefix -eq 'CUSTOM') {
+                $prefix = 'SPECIFIC'
             }
+            if ($prefix -notin @('11VMGC', '11VMDEV', '11VMSAS', 'SPECIFIC')) {
+                throw "CSV row $rowNumber has an invalid NamingConvention '$($row.NamingConvention)'. Use 11VMGC, 11VMDEV, 11VMSAS, or SPECIFIC."
+            }
+
+            $requestedVMName = if ($prefix -eq 'SPECIFIC') {
+                Resolve-RequiredText -InitialValue ([string]$row.VMName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber VMName" -RejectAssignmentDelimiter
+            }
+            else { '' }
 
             [pscustomobject]@{
                 RowNumber        = $rowNumber
                 NamingConvention = $prefix
+                RequestedVMName  = $requestedVMName
                 FirstName        = Resolve-RequiredText -InitialValue ([string]$row.FirstName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber FirstName" -RejectAssignmentDelimiter
                 LastName         = Resolve-RequiredText -InitialValue ([string]$row.LastName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber LastName" -RejectAssignmentDelimiter
                 ADAccountName    = Resolve-RequiredText -InitialValue ([string]$row.ADAccountName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber ADAccountName"
@@ -402,6 +442,7 @@ function Get-AssignmentWorkItems {
             [pscustomobject]@{
                 RowNumber        = $rowNumber
                 NamingConvention = [string]$row.NamingConvention
+                RequestedVMName  = [string]$row.VMName
                 FirstName        = [string]$row.FirstName
                 LastName         = [string]$row.LastName
                 ADAccountName    = [string]$row.ADAccountName
@@ -437,6 +478,7 @@ function New-AssignmentResult {
     return [pscustomobject]@{
         CsvRow             = $WorkItem.RowNumber
         NamingConvention   = $WorkItem.NamingConvention
+        RequestedVMName    = $WorkItem.RequestedVMName
         User               = "$($WorkItem.FirstName) $($WorkItem.LastName)".Trim()
         RequestedADAccount = $WorkItem.ADAccountName
         ResolvedADAccount  = $ResolvedADAccount
@@ -488,7 +530,7 @@ function Assert-UserIsNotAlreadyAssigned {
 
     $personName = "$FirstName $LastName"
     $escapedPersonName = [regex]::Escape($personName)
-    $pattern = "^(?:11VMGC|11VMDEV|11VMSAS)\d+\s+-\s+(?:Consultant\s+)?$escapedPersonName$"
+    $pattern = "^.+\s+-\s+(?:Consultant\s+)?$escapedPersonName$"
     $matches = @($VirtualMachines | Where-Object { $_.Name -match $pattern })
     if ($matches.Count -gt 0) {
         $names = $matches.Name -join ', '
@@ -615,6 +657,93 @@ function Select-AssignmentVM {
     }
 
     return $null
+}
+
+function Select-SpecificAssignmentVM {
+    param(
+        [Parameter(Mandatory)]
+        [string]$InitialVMName,
+
+        [Parameter(Mandatory)]
+        [object[]]$AllVirtualMachines,
+
+        [Parameter(Mandatory)]
+        [object]$Server,
+
+        [Parameter(Mandatory)]
+        [string]$AssignmentLabel,
+
+        [Parameter(Mandatory)]
+        [string]$ADAccount,
+
+        [Parameter()]
+        [switch]$AllowNameCorrection
+    )
+
+    $requestedName = $InitialVMName
+    while ($true) {
+        $matches = @($AllVirtualMachines | Where-Object { $_.Name -ieq $requestedName })
+        $validationMessage = $null
+        if ($matches.Count -eq 0) {
+            $validationMessage = "Virtual machine '$requestedName' was not found in the cluster."
+        }
+        elseif ($matches.Count -gt 1) {
+            $validationMessage = "More than one virtual machine is named '$requestedName' in the cluster."
+        }
+        elseif ($matches[0].Name -match '\s+-\s+.+$') {
+            $validationMessage = "Virtual machine '$($matches[0].Name)' already appears to be assigned."
+        }
+        elseif ([string]$matches[0].PowerState -ne 'PoweredOn') {
+            $validationMessage = "Virtual machine '$($matches[0].Name)' is not powered on."
+        }
+
+        if ($null -ne $validationMessage) {
+            if (-not $AllowNameCorrection) {
+                throw $validationMessage
+            }
+            Write-Warning $validationMessage
+            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact virtual machine name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
+            continue
+        }
+
+        $vm = Get-RefreshedCandidate -Candidate ([pscustomobject]@{ VM = $matches[0] }) -Server $Server
+        if ($null -eq $vm) {
+            if (-not $AllowNameCorrection) {
+                throw "Virtual machine '$requestedName' does not currently meet the assignment requirements."
+            }
+            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact virtual machine name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
+            continue
+        }
+
+        $targetName = "$($vm.Name) - $AssignmentLabel"
+        $nameCollision = @($AllVirtualMachines | Where-Object { $_.Name -ieq $targetName -and $_.Id -ne $vm.Id })
+        if ($nameCollision.Count -gt 0) {
+            $validationMessage = "The proposed name '$targetName' already exists in the cluster."
+            if (-not $AllowNameCorrection) {
+                throw $validationMessage
+            }
+            Write-Warning $validationMessage
+            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact virtual machine name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
+            continue
+        }
+
+        Write-Host "`nProposed assignment:" -ForegroundColor Cyan
+        Write-Host "  Current VM name:  $($vm.Name)"
+        Write-Host "  Assigned VM name: $targetName"
+        Write-Host "  AD account:        $ADAccount"
+        if (Read-YesNo -Prompt "Use virtual machine '$($vm.Name)' for this assignment?") {
+            return [pscustomobject]@{
+                VM         = $vm
+                TargetName = $targetName
+            }
+        }
+
+        if (-not $AllowNameCorrection) {
+            return $null
+        }
+        Write-Host "Skipped '$($vm.Name)'." -ForegroundColor Yellow
+        $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact virtual machine name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
+    }
 }
 
 function Get-WindowsGuestCredential {
@@ -891,16 +1020,34 @@ try {
             $allVirtualMachines = @(Get-VM -Location $cluster -Server $server -ErrorAction Stop)
             Assert-UserIsNotAlreadyAssigned -VirtualMachines $allVirtualMachines -FirstName $workItem.FirstName -LastName $workItem.LastName
 
-            $inventory = @(Get-DesktopInventory -VirtualMachines $allVirtualMachines -Prefix $workItem.NamingConvention)
-            $candidates = @(Get-AssignmentCandidates -Inventory $inventory -Prefix $workItem.NamingConvention)
-            $selection = Select-AssignmentVM -Candidates $candidates -AllVirtualMachines $allVirtualMachines -Server $server -AssignmentLabel $assignmentLabel -ADAccount $workItem.ADAccountName
+            if ($workItem.NamingConvention -eq 'SPECIFIC') {
+                $specificSelectionParameters = @{
+                    InitialVMName     = $workItem.RequestedVMName
+                    AllVirtualMachines = $allVirtualMachines
+                    Server            = $server
+                    AssignmentLabel   = $assignmentLabel
+                    ADAccount         = $workItem.ADAccountName
+                }
+                if ($script:InvocationParameterSet -eq 'Interactive') {
+                    $specificSelectionParameters.AllowNameCorrection = $true
+                }
+                $selection = Select-SpecificAssignmentVM @specificSelectionParameters
+            }
+            else {
+                $inventory = @(Get-DesktopInventory -VirtualMachines $allVirtualMachines -Prefix $workItem.NamingConvention)
+                $candidates = @(Get-AssignmentCandidates -Inventory $inventory -Prefix $workItem.NamingConvention)
+                $selection = Select-AssignmentVM -Candidates $candidates -AllVirtualMachines $allVirtualMachines -Server $server -AssignmentLabel $assignmentLabel -ADAccount $workItem.ADAccountName
+            }
             if ($null -eq $selection) {
-                $message = 'All available candidates were skipped by the operator.'
+                $message = if ($workItem.NamingConvention -eq 'SPECIFIC') { 'The specified virtual machine was not selected.' } else { 'All available candidates were skipped by the operator.' }
                 Write-Host "$message No changes were made for '$personName'." -ForegroundColor Yellow
                 $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Skipped' -Message $message
                 continue
             }
 
+            if ($workItem.NamingConvention -eq 'SPECIFIC') {
+                $workItem.RequestedVMName = $selection.VM.Name
+            }
             $selectedVM = $selection.VM
             $targetVMName = $selection.TargetName
             if (-not $PSCmdlet.ShouldProcess($selectedVM.Name, "Grant Remote Desktop access to '$($workItem.ADAccountName)' and rename the VM to '$targetVMName'")) {
@@ -959,13 +1106,13 @@ try {
 
     Write-Host "`nAssignment results:" -ForegroundColor Cyan
     $results |
-        Format-Table CsvRow, NamingConvention, User, RequestedADAccount, ResolvedADAccount, VMName, Outcome -AutoSize -Wrap |
+        Format-Table CsvRow, User, VMName, ResolvedADAccount, Outcome -AutoSize -Wrap |
         Out-Host
 
     $failedResults = @($results | Where-Object { $_.Outcome -in @('InputFailed', 'Failed') })
     if ($failedResults.Count -gt 0) {
         Write-Host "`nFailure details:" -ForegroundColor Yellow
-        $failedResults | Select-Object CsvRow, User, Outcome, Message | Format-List | Out-Host
+        $failedResults | Select-Object CsvRow, NamingConvention, RequestedVMName, User, RequestedADAccount, Outcome, Message | Format-List | Out-Host
         throw "$($failedResults.Count) assignment(s) failed. Review the results above."
     }
 }
