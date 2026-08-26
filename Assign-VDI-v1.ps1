@@ -3,12 +3,11 @@
 Assigns an available developer desktop virtual machine to a user.
 
 .DESCRIPTION
-Selects a naming convention, gathers the user's Active Directory account, and
-determines whether the user is a consultant. The script retrieves the user's
-full name from Active Directory, finds the highest-numbered assigned virtual
-machine for the selected naming convention in the Developer Desktops cluster,
-and offers powered-on, unassigned virtual machines with higher numbers in
-ascending order.
+Selects a naming convention and gathers the user's Active Directory account.
+The script retrieves the user's full name and consultant status from Active
+Directory, finds the highest-numbered assigned virtual machine for the selected
+naming convention in the Developer Desktops cluster, and offers powered-on,
+unassigned virtual machines with higher numbers in ascending order.
 
 After the operator accepts a virtual machine, the script uses VMware Tools guest
 operations to add the user's Active Directory account to the built-in local
@@ -52,33 +51,30 @@ The script validates the account and retrieves its DisplayName from Active
 Directory. When available, the account's canonical user principal name is used
 for the VMware Tools guest operation.
 
-.PARAMETER Consultant
-Indicates whether "Consultant" is included before the user's name in the
-assigned virtual machine name.
-
 .PARAMETER InputCsvPath
 Optional path to a CSV file for assigning multiple users. Required columns are
-NamingConvention, ADAccountName, and Consultant. Consultant accepts Y, Yes,
-True, 1, N, No, False, or 0. Interactive user fields cannot be combined with
-InputCsvPath. For a SPECIFIC row, include a VMName column and the exact virtual
-machine name. The user's full name is retrieved from Active Directory.
+NamingConvention and ADAccountName. Interactive user fields cannot be combined
+with InputCsvPath. For a SPECIFIC row, include a VMName column and the exact
+virtual machine name. The user's full name and consultant status are retrieved
+from Active Directory. Users under OU=noneDOHMHusers are consultants; users
+under OU=Agency-Users are not consultants.
 
 .EXAMPLE
 .\Assign-VDI-v1.ps1
 
 .EXAMPLE
-.\Assign-VDI-v1.ps1 -NamingConvention 11VMDEV -ADAccountName jdoe -Consultant $false
+.\Assign-VDI-v1.ps1 -NamingConvention 11VMDEV -ADAccountName jdoe
 
 .EXAMPLE
-.\Assign-VDI-v1.ps1 -NamingConvention SPECIFIC -VMName 11VMDEV501 -ADAccountName jdoe -Consultant $false
+.\Assign-VDI-v1.ps1 -NamingConvention SPECIFIC -VMName 11VMDEV501 -ADAccountName jdoe
 
 .EXAMPLE
 .\Assign-VDI-v1.ps1 -InputCsvPath .\DesktopAssignments.csv
 
 The CSV format is:
-NamingConvention,VMName,ADAccountName,Consultant
-11VMGC,,jdoe,No
-SPECIFIC,11VMDEV501,CONTOSO\jsmith,Yes
+NamingConvention,VMName,ADAccountName
+11VMGC,,jdoe
+SPECIFIC,11VMDEV501,CONTOSO\jsmith
 #>
 [CmdletBinding(DefaultParameterSetName = 'Interactive', SupportsShouldProcess)]
 param(
@@ -107,9 +103,6 @@ param(
     [Parameter(ParameterSetName = 'Interactive')]
     [string]$ADAccountName,
 
-    [Parameter(ParameterSetName = 'Interactive')]
-    [Nullable[bool]]$Consultant,
-
     [Parameter(Mandatory, ParameterSetName = 'Csv')]
     [ValidateNotNullOrEmpty()]
     [string]$InputCsvPath
@@ -123,7 +116,6 @@ $script:InvocationParameterSet = $PSCmdlet.ParameterSetName
 $namingConventionWasSupplied = $PSBoundParameters.ContainsKey('NamingConvention')
 $vmNameWasSupplied = $PSBoundParameters.ContainsKey('VMName')
 $adAccountWasSupplied = $PSBoundParameters.ContainsKey('ADAccountName')
-$consultantWasSupplied = $PSBoundParameters.ContainsKey('Consultant')
 
 function Write-Banner {
     $line = '=' * 76
@@ -356,6 +348,31 @@ function ConvertTo-LdapFilterValue {
     return $Value.Replace('\', '\5c').Replace('*', '\2a').Replace('(', '\28').Replace(')', '\29').Replace(([char]0).ToString(), '\00')
 }
 
+function Resolve-ConsultantStatusFromDistinguishedName {
+    param(
+        [Parameter(Mandatory)]
+        [string]$DistinguishedName,
+
+        [Parameter(Mandatory)]
+        [string]$Context
+    )
+
+    $isConsultantOU = [regex]::IsMatch($DistinguishedName, '(?i)(?:^|,)\s*OU=noneDOHMHusers\s*(?:,|$)')
+    $isAgencyOU = [regex]::IsMatch($DistinguishedName, '(?i)(?:^|,)\s*OU=Agency-Users\s*(?:,|$)')
+
+    if ($isConsultantOU -and $isAgencyOU) {
+        throw "$Context is under both OU=noneDOHMHusers and OU=Agency-Users. Consultant status is ambiguous."
+    }
+    if (-not $isConsultantOU -and -not $isAgencyOU) {
+        throw "$Context is not under OU=noneDOHMHusers or OU=Agency-Users. Consultant status cannot be determined."
+    }
+
+    return [pscustomobject]@{
+        Consultant = $isConsultantOU
+        SourceOU   = if ($isConsultantOU) { 'OU=noneDOHMHusers' } else { 'OU=Agency-Users' }
+    }
+}
+
 function Resolve-ActiveDirectoryUser {
     param(
         [Parameter(Mandatory)]
@@ -368,7 +385,7 @@ function Resolve-ActiveDirectoryUser {
     Initialize-ActiveDirectoryModule
     $lookupAccount = $AccountName.Trim()
     $queryParameters = @{
-        Properties  = @('DisplayName', 'GivenName', 'Surname', 'UserPrincipalName', 'SID')
+        Properties  = @('DisplayName', 'GivenName', 'Surname', 'UserPrincipalName', 'SID', 'DistinguishedName')
         ErrorAction = 'Stop'
     }
     if (-not [string]::IsNullOrWhiteSpace($ADServer)) {
@@ -434,10 +451,18 @@ function Resolve-ActiveDirectoryUser {
         throw "$Context '$lookupAccount' does not have a usable account name in Active Directory."
     }
 
+    $distinguishedName = [string]$adUser.DistinguishedName
+    if ([string]::IsNullOrWhiteSpace($distinguishedName)) {
+        throw "$Context '$lookupAccount' does not have a usable DistinguishedName in Active Directory."
+    }
+    $consultantStatus = Resolve-ConsultantStatusFromDistinguishedName -DistinguishedName $distinguishedName -Context "$Context '$lookupAccount'"
+
     return [pscustomobject]@{
         FullName         = $resolvedFullName
         GuestAccountName = $guestAccountName
         SID              = $resolvedSid
+        Consultant       = $consultantStatus.Consultant
+        ConsultantOU     = $consultantStatus.SourceOU
     }
 }
 
@@ -449,7 +474,9 @@ function Resolve-InteractiveActiveDirectoryUser {
         $resolvedAccount = Resolve-RequiredText -InitialValue $candidateAccount -WasSupplied $accountWasSupplied -Prompt "Enter the user's Active Directory account name" -FieldName 'Active Directory account name'
         try {
             $adUser = Resolve-ActiveDirectoryUser -AccountName $resolvedAccount -Context 'Active Directory account'
+            $consultantLabel = if ($adUser.Consultant) { 'Yes' } else { 'No' }
             Write-Host "Resolved Active Directory user: $($adUser.FullName) [$($adUser.GuestAccountName)]" -ForegroundColor Green
+            Write-Host "Consultant: $consultantLabel ($($adUser.ConsultantOU))" -ForegroundColor Green
             return $adUser
         }
         catch {
@@ -457,24 +484,6 @@ function Resolve-InteractiveActiveDirectoryUser {
             $candidateAccount = ''
             $accountWasSupplied = $false
         }
-    }
-}
-
-function ConvertTo-ConsultantValue {
-    param(
-        [Parameter()]
-        [AllowNull()]
-        [object]$Value,
-
-        [Parameter(Mandatory)]
-        [string]$Context
-    )
-
-    $normalizedValue = ([string]$Value).Trim().ToLowerInvariant()
-    switch ($normalizedValue) {
-        { $_ -in @('y', 'yes', 'true', '1') } { return $true }
-        { $_ -in @('n', 'no', 'false', '0') } { return $false }
-        default { throw "$Context has an invalid Consultant value '$Value'. Use Y, Yes, True, 1, N, No, False, or 0." }
     }
 }
 
@@ -491,12 +500,6 @@ function Get-AssignmentWorkItems {
             ''
         }
         $resolvedADUser = Resolve-InteractiveActiveDirectoryUser
-        $isConsultant = if ($consultantWasSupplied) {
-            [bool]$Consultant
-        }
-        else {
-            Read-YesNo -Prompt 'Is this user a consultant?'
-        }
 
         return @(
             [pscustomobject]@{
@@ -506,7 +509,8 @@ function Get-AssignmentWorkItems {
                 FullName         = $resolvedADUser.FullName
                 ADAccountName    = $resolvedADUser.GuestAccountName
                 ADUserSID        = $resolvedADUser.SID
-                Consultant       = $isConsultant
+                Consultant       = $resolvedADUser.Consultant
+                ConsultantOU     = $resolvedADUser.ConsultantOU
                 ValidationError  = $null
             }
         )
@@ -522,7 +526,7 @@ function Get-AssignmentWorkItems {
         throw "CSV input file '$resolvedCsvPath' does not contain any user rows."
     }
 
-    $requiredColumns = @('NamingConvention', 'ADAccountName', 'Consultant')
+    $requiredColumns = @('NamingConvention', 'ADAccountName')
     $columnNames = @($rows[0].PSObject.Properties.Name)
     $missingColumns = @($requiredColumns | Where-Object { $columnNames -notcontains $_ })
     if ($missingColumns.Count -gt 0) {
@@ -557,7 +561,8 @@ function Get-AssignmentWorkItems {
                 FullName         = $resolvedADUser.FullName
                 ADAccountName    = $resolvedADUser.GuestAccountName
                 ADUserSID        = $resolvedADUser.SID
-                Consultant       = ConvertTo-ConsultantValue -Value $row.Consultant -Context "CSV row $rowNumber"
+                Consultant       = $resolvedADUser.Consultant
+                ConsultantOU     = $resolvedADUser.ConsultantOU
                 ValidationError  = $null
             }
         }
@@ -570,6 +575,7 @@ function Get-AssignmentWorkItems {
                 ADAccountName    = [string]$row.ADAccountName
                 ADUserSID        = ''
                 Consultant       = $null
+                ConsultantOU     = ''
                 ValidationError  = $_.Exception.Message
             }
         }
@@ -603,6 +609,8 @@ function New-AssignmentResult {
         NamingConvention   = $WorkItem.NamingConvention
         RequestedVMName    = $WorkItem.RequestedVMName
         User               = [string]$WorkItem.FullName
+        Consultant         = if ($null -eq $WorkItem.Consultant) { 'Unknown' } elseif ([bool]$WorkItem.Consultant) { 'Yes' } else { 'No' }
+        ConsultantOU       = [string]$WorkItem.ConsultantOU
         RequestedADAccount = $WorkItem.ADAccountName
         ResolvedADAccount  = $ResolvedADAccount
         VMName             = $VMName
@@ -1253,13 +1261,13 @@ try {
 
     Write-Host "`nAssignment results:" -ForegroundColor Cyan
     $results |
-        Format-Table CsvRow, User, VMName, ResolvedADAccount, Outcome -AutoSize -Wrap |
+        Format-Table CsvRow, User, Consultant, VMName, ResolvedADAccount, Outcome -AutoSize -Wrap |
         Out-Host
 
     $failedResults = @($results | Where-Object { $_.Outcome -in @('InputFailed', 'Failed') })
     if ($failedResults.Count -gt 0) {
         Write-Host "`nFailure details:" -ForegroundColor Yellow
-        $failedResults | Select-Object CsvRow, NamingConvention, RequestedVMName, User, RequestedADAccount, Outcome, Message | Format-List | Out-Host
+        $failedResults | Select-Object CsvRow, NamingConvention, RequestedVMName, User, Consultant, ConsultantOU, RequestedADAccount, Outcome, Message | Format-List | Out-Host
         throw "$($failedResults.Count) assignment(s) failed. Review the results above."
     }
 }
