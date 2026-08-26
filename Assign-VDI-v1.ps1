@@ -405,7 +405,9 @@ function Resolve-ActiveDirectoryUser {
     Initialize-ActiveDirectoryModule
     $lookupAccount = $AccountName.Trim()
     $queryParameters = @{
-        Properties  = @('Name', 'DisplayName', 'GivenName', 'Surname', 'UserPrincipalName', 'SID', 'DistinguishedName')
+        # Name, DistinguishedName, SID, sAMAccountName, and UPN are included in
+        # the standard Get-ADUser result. Request only the additional field.
+        Properties  = @('DisplayName')
         ErrorAction = 'Stop'
     }
     if (-not [string]::IsNullOrWhiteSpace($ADServer)) {
@@ -413,35 +415,38 @@ function Resolve-ActiveDirectoryUser {
     }
 
     try {
-        $matches = if ($lookupAccount -match '@') {
-            $escapedUpn = ConvertTo-LdapFilterValue -Value $lookupAccount
-            @(Get-ADUser -LDAPFilter "(userPrincipalName=$escapedUpn)" @queryParameters)
-        }
-        else {
-            $identity = if ($lookupAccount -match '^[^\\]+\\(?<SamAccountName>.+)$') {
-                $Matches['SamAccountName']
+        $adUsers = @(
+            if ($lookupAccount -match '@') {
+                $escapedUpn = ConvertTo-LdapFilterValue -Value $lookupAccount
+                Get-ADUser -LDAPFilter "(userPrincipalName=$escapedUpn)" @queryParameters
             }
             else {
-                $lookupAccount
+                $identity = if ($lookupAccount -match '^[^\\]+\\(?<SamAccountName>.+)$') {
+                    $Matches['SamAccountName']
+                }
+                else {
+                    $lookupAccount
+                }
+                Get-ADUser -Identity $identity @queryParameters
             }
-            @(Get-ADUser -Identity $identity @queryParameters)
-        }
+        )
     }
     catch {
         throw "$Context '$lookupAccount' could not be resolved in Active Directory. $($_.Exception.Message)"
     }
 
-    if ($matches.Count -eq 0) {
+    if ($adUsers.Count -eq 0) {
         throw "$Context '$lookupAccount' was not found in Active Directory."
     }
-    if ($matches.Count -gt 1) {
+    if ($adUsers.Count -gt 1) {
         throw "$Context '$lookupAccount' matched more than one Active Directory user."
     }
 
-    $adUser = $matches[0]
+    $adUser = $adUsers[0]
     $distinguishedName = [string]$adUser.DistinguishedName
     if ([string]::IsNullOrWhiteSpace($distinguishedName)) {
-        throw "$Context '$lookupAccount' does not have a usable DistinguishedName in Active Directory."
+        $returnedProperties = @($adUser.PSObject.Properties.Name | Sort-Object) -join ', '
+        throw "$Context '$lookupAccount' does not have a usable DistinguishedName in the returned Active Directory object. Returned properties: $returnedProperties"
     }
 
     $resolvedFullName = [regex]::Replace(([string]$adUser.DisplayName).Trim(), '\s+', ' ')
