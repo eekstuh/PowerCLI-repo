@@ -64,10 +64,11 @@ assigned virtual machine name.
 
 .PARAMETER InputCsvPath
 Optional path to a CSV file for assigning multiple users. Required columns are
-NamingConvention, FirstName, LastName, ADAccountName, and Consultant. Consultant
-accepts Y, Yes, True, 1, N, No, False, or 0. Interactive user fields cannot be
-combined with InputCsvPath. For a SPECIFIC row, include a VMName column and the
-exact virtual machine name.
+NamingConvention, FullName, ADAccountName, and Consultant. FullName must include
+at least a first name and a last name separated by a space. Consultant accepts Y,
+Yes, True, 1, N, No, False, or 0. Interactive user fields cannot be combined with
+InputCsvPath. For a SPECIFIC row, include a VMName column and the exact virtual
+machine name.
 
 .EXAMPLE
 .\Assign-VDI-v1.ps1
@@ -82,9 +83,9 @@ exact virtual machine name.
 .\Assign-VDI-v1.ps1 -InputCsvPath .\DesktopAssignments.csv
 
 The CSV format is:
-NamingConvention,VMName,FirstName,LastName,ADAccountName,Consultant
-11VMGC,,Jane,Doe,jdoe,No
-SPECIFIC,11VMDEV501,John,Smith,CONTOSO\jsmith,Yes
+NamingConvention,VMName,FullName,ADAccountName,Consultant
+11VMGC,,"Jane Doe",jdoe,No
+SPECIFIC,11VMDEV501,"John Smith",CONTOSO\jsmith,Yes
 #>
 [CmdletBinding(DefaultParameterSetName = 'Interactive', SupportsShouldProcess)]
 param(
@@ -366,18 +367,35 @@ function Resolve-InteractivePersonName {
 
     while ($true) {
         $resolvedFullName = Resolve-RequiredText -InitialValue $FullName -WasSupplied $fullNameWasSupplied -Prompt "Enter the user's first and last name (for example, John Smith)" -FieldName 'Full name' -RejectAssignmentDelimiter
-        $nameMatch = [regex]::Match($resolvedFullName, '^(?<FirstName>\S+)\s+(?<LastName>.+)$')
-        if ($nameMatch.Success) {
-            return [pscustomobject]@{
-                FirstName = $nameMatch.Groups['FirstName'].Value
-                LastName  = $nameMatch.Groups['LastName'].Value
+        try {
+            return ConvertTo-PersonNameParts -FullName $resolvedFullName -Context 'FullName'
+        }
+        catch {
+            if ($fullNameWasSupplied) {
+                throw
             }
+            Write-Warning 'Enter at least a first name and a last name separated by a space.'
         }
+    }
+}
 
-        if ($fullNameWasSupplied) {
-            throw 'FullName must include at least a first name and a last name separated by a space.'
-        }
-        Write-Warning 'Enter at least a first name and a last name separated by a space.'
+function ConvertTo-PersonNameParts {
+    param(
+        [Parameter(Mandatory)]
+        [string]$FullName,
+
+        [Parameter(Mandatory)]
+        [string]$Context
+    )
+
+    $nameMatch = [regex]::Match($FullName, '^(?<FirstName>\S+)\s+(?<LastName>.+)$')
+    if (-not $nameMatch.Success) {
+        throw "$Context must include at least a first name and a last name separated by a space."
+    }
+
+    return [pscustomobject]@{
+        FirstName = $nameMatch.Groups['FirstName'].Value
+        LastName  = $nameMatch.Groups['LastName'].Value
     }
 }
 
@@ -444,7 +462,7 @@ function Get-AssignmentWorkItems {
         throw "CSV input file '$resolvedCsvPath' does not contain any user rows."
     }
 
-    $requiredColumns = @('NamingConvention', 'FirstName', 'LastName', 'ADAccountName', 'Consultant')
+    $requiredColumns = @('NamingConvention', 'FullName', 'ADAccountName', 'Consultant')
     $columnNames = @($rows[0].PSObject.Properties.Name)
     $missingColumns = @($requiredColumns | Where-Object { $columnNames -notcontains $_ })
     if ($missingColumns.Count -gt 0) {
@@ -469,12 +487,15 @@ function Get-AssignmentWorkItems {
             }
             else { '' }
 
+            $resolvedFullName = Resolve-RequiredText -InitialValue ([string]$row.FullName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber FullName" -RejectAssignmentDelimiter
+            $personNameParts = ConvertTo-PersonNameParts -FullName $resolvedFullName -Context "CSV row $rowNumber FullName"
+
             [pscustomobject]@{
                 RowNumber        = $rowNumber
                 NamingConvention = $prefix
                 RequestedVMName  = $requestedVMName
-                FirstName        = Resolve-RequiredText -InitialValue ([string]$row.FirstName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber FirstName" -RejectAssignmentDelimiter
-                LastName         = Resolve-RequiredText -InitialValue ([string]$row.LastName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber LastName" -RejectAssignmentDelimiter
+                FirstName        = $personNameParts.FirstName
+                LastName         = $personNameParts.LastName
                 ADAccountName    = Resolve-RequiredText -InitialValue ([string]$row.ADAccountName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber ADAccountName"
                 Consultant       = ConvertTo-ConsultantValue -Value $row.Consultant -Context "CSV row $rowNumber"
                 ValidationError  = $null
@@ -485,8 +506,8 @@ function Get-AssignmentWorkItems {
                 RowNumber        = $rowNumber
                 NamingConvention = [string]$row.NamingConvention
                 RequestedVMName  = [string]$row.VMName
-                FirstName        = [string]$row.FirstName
-                LastName         = [string]$row.LastName
+                FirstName        = [string]$row.FullName
+                LastName         = ''
                 ADAccountName    = [string]$row.ADAccountName
                 Consultant       = $null
                 ValidationError  = $_.Exception.Message
