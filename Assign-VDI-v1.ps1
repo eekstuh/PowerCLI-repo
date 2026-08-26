@@ -41,10 +41,17 @@ Exact virtual machine name to use with NamingConvention SPECIFIC. If omitted in
 interactive mode, the script prompts for it.
 
 .PARAMETER FirstName
-User's first name as it should appear in the vSphere inventory name.
+Optional user's first name for backward-compatible parameter-driven execution.
+FirstName and LastName must be supplied together and cannot be combined with
+FullName.
 
 .PARAMETER LastName
-User's last name as it should appear in the vSphere inventory name.
+Optional user's last name for backward-compatible parameter-driven execution.
+
+.PARAMETER FullName
+User's first and last name as they should appear in the vSphere inventory name,
+for example "John Smith". If no name parameters are supplied, the script prompts
+once for the full name.
 
 .PARAMETER ADAccountName
 Active Directory account to add to the guest's local Remote Desktop Users group.
@@ -66,10 +73,10 @@ exact virtual machine name.
 .\Assign-VDI-v1.ps1
 
 .EXAMPLE
-.\Assign-VDI-v1.ps1 -NamingConvention 11VMDEV -FirstName Jane -LastName Doe -ADAccountName jdoe -Consultant $false
+.\Assign-VDI-v1.ps1 -NamingConvention 11VMDEV -FullName 'Jane Doe' -ADAccountName jdoe -Consultant $false
 
 .EXAMPLE
-.\Assign-VDI-v1.ps1 -NamingConvention SPECIFIC -VMName 11VMDEV501 -FirstName Jane -LastName Doe -ADAccountName jdoe -Consultant $false
+.\Assign-VDI-v1.ps1 -NamingConvention SPECIFIC -VMName 11VMDEV501 -FullName 'Jane Doe' -ADAccountName jdoe -Consultant $false
 
 .EXAMPLE
 .\Assign-VDI-v1.ps1 -InputCsvPath .\DesktopAssignments.csv
@@ -107,6 +114,9 @@ param(
     [string]$LastName,
 
     [Parameter(ParameterSetName = 'Interactive')]
+    [string]$FullName,
+
+    [Parameter(ParameterSetName = 'Interactive')]
     [string]$ADAccountName,
 
     [Parameter(ParameterSetName = 'Interactive')]
@@ -126,6 +136,7 @@ $namingConventionWasSupplied = $PSBoundParameters.ContainsKey('NamingConvention'
 $vmNameWasSupplied = $PSBoundParameters.ContainsKey('VMName')
 $firstNameWasSupplied = $PSBoundParameters.ContainsKey('FirstName')
 $lastNameWasSupplied = $PSBoundParameters.ContainsKey('LastName')
+$fullNameWasSupplied = $PSBoundParameters.ContainsKey('FullName')
 $adAccountWasSupplied = $PSBoundParameters.ContainsKey('ADAccountName')
 $consultantWasSupplied = $PSBoundParameters.ContainsKey('Consultant')
 
@@ -338,6 +349,38 @@ function Resolve-RequiredText {
     }
 }
 
+function Resolve-InteractivePersonName {
+    if ($fullNameWasSupplied -and ($firstNameWasSupplied -or $lastNameWasSupplied)) {
+        throw 'FullName cannot be combined with FirstName or LastName.'
+    }
+    if ($firstNameWasSupplied -xor $lastNameWasSupplied) {
+        throw 'FirstName and LastName must be supplied together.'
+    }
+
+    if ($firstNameWasSupplied -and $lastNameWasSupplied) {
+        return [pscustomobject]@{
+            FirstName = Resolve-RequiredText -InitialValue $FirstName -WasSupplied $true -Prompt '' -FieldName 'First name' -RejectAssignmentDelimiter
+            LastName  = Resolve-RequiredText -InitialValue $LastName -WasSupplied $true -Prompt '' -FieldName 'Last name' -RejectAssignmentDelimiter
+        }
+    }
+
+    while ($true) {
+        $resolvedFullName = Resolve-RequiredText -InitialValue $FullName -WasSupplied $fullNameWasSupplied -Prompt "Enter the user's first and last name (for example, John Smith)" -FieldName 'Full name' -RejectAssignmentDelimiter
+        $nameMatch = [regex]::Match($resolvedFullName, '^(?<FirstName>\S+)\s+(?<LastName>.+)$')
+        if ($nameMatch.Success) {
+            return [pscustomobject]@{
+                FirstName = $nameMatch.Groups['FirstName'].Value
+                LastName  = $nameMatch.Groups['LastName'].Value
+            }
+        }
+
+        if ($fullNameWasSupplied) {
+            throw 'FullName must include at least a first name and a last name separated by a space.'
+        }
+        Write-Warning 'Enter at least a first name and a last name separated by a space.'
+    }
+}
+
 function ConvertTo-ConsultantValue {
     param(
         [Parameter()]
@@ -368,8 +411,7 @@ function Get-AssignmentWorkItems {
             }
             ''
         }
-        $resolvedFirstName = Resolve-RequiredText -InitialValue $FirstName -WasSupplied $firstNameWasSupplied -Prompt "Enter the user's first name" -FieldName 'First name' -RejectAssignmentDelimiter
-        $resolvedLastName = Resolve-RequiredText -InitialValue $LastName -WasSupplied $lastNameWasSupplied -Prompt "Enter the user's last name" -FieldName 'Last name' -RejectAssignmentDelimiter
+        $resolvedPersonName = Resolve-InteractivePersonName
         $resolvedADAccount = Resolve-RequiredText -InitialValue $ADAccountName -WasSupplied $adAccountWasSupplied -Prompt "Enter the user's Active Directory account name" -FieldName 'Active Directory account name'
         $isConsultant = if ($consultantWasSupplied) {
             [bool]$Consultant
@@ -383,8 +425,8 @@ function Get-AssignmentWorkItems {
                 RowNumber        = $null
                 NamingConvention = $selectedPrefix
                 RequestedVMName  = $requestedVMName
-                FirstName        = $resolvedFirstName
-                LastName         = $resolvedLastName
+                FirstName        = $resolvedPersonName.FirstName
+                LastName         = $resolvedPersonName.LastName
                 ADAccountName    = $resolvedADAccount
                 Consultant       = $isConsultant
                 ValidationError  = $null
