@@ -14,6 +14,9 @@ operations to add the user's Active Directory account to the built-in local
 Remote Desktop Users group. The vSphere inventory name is changed only after the
 guest operation succeeds. The Windows computer name is not changed.
 
+If an existing VM name already ends with the same AD full name, the script lists
+the matching VM or VMs and asks whether another VDI should be assigned.
+
 Enter 'exit' at any text prompt to cancel the remaining workflow.
 
 .PARAMETER VIServer
@@ -681,7 +684,7 @@ function Get-DesktopInventory {
     )
 }
 
-function Assert-UserIsNotAlreadyAssigned {
+function Confirm-DuplicateUserAssignment {
     param(
         [Parameter(Mandatory)]
         [object[]]$VirtualMachines,
@@ -693,9 +696,25 @@ function Assert-UserIsNotAlreadyAssigned {
     $escapedPersonName = [regex]::Escape($FullName)
     $pattern = "^.+\s+-\s+(?:Consultant\s+)?$escapedPersonName$"
     $matches = @($VirtualMachines | Where-Object { $_.Name -match $pattern })
-    if ($matches.Count -gt 0) {
-        $names = $matches.Name -join ', '
-        throw "A virtual machine assignment for '$FullName' already exists in the cluster: $names"
+    if ($matches.Count -eq 0) {
+        return [pscustomobject]@{
+            Confirmed       = $true
+            IsDuplicate     = $false
+            ExistingVMNames = @()
+        }
+    }
+
+    $names = @($matches.Name | Sort-Object)
+    Write-Warning "A virtual machine assignment for '$FullName' already exists in the cluster: $($names -join ', ')"
+    $confirmed = Read-YesNo -Prompt "Are you sure you want to assign another VDI to '$FullName'?"
+    if ($confirmed) {
+        Write-Host "Duplicate VDI assignment authorized for '$FullName'." -ForegroundColor Yellow
+    }
+
+    return [pscustomobject]@{
+        Confirmed       = $confirmed
+        IsDuplicate     = $true
+        ExistingVMNames = $names
     }
 }
 
@@ -1200,7 +1219,13 @@ try {
             $personName = [string]$workItem.FullName
             $assignmentLabel = if ([bool]$workItem.Consultant) { "Consultant $personName" } else { $personName }
             $allVirtualMachines = @(Get-VM -Location $cluster -Server $server -ErrorAction Stop)
-            Assert-UserIsNotAlreadyAssigned -VirtualMachines $allVirtualMachines -FullName $workItem.FullName
+            $duplicateDecision = Confirm-DuplicateUserAssignment -VirtualMachines $allVirtualMachines -FullName $workItem.FullName
+            if (-not $duplicateDecision.Confirmed) {
+                $message = "Duplicate VDI assignment was not authorized. Existing assignment(s): $($duplicateDecision.ExistingVMNames -join ', ')"
+                Write-Host "$message No changes were made for '$personName'." -ForegroundColor Yellow
+                $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Skipped' -Message $message
+                continue
+            }
 
             if ($workItem.NamingConvention -eq 'SPECIFIC') {
                 $specificSelectionParameters = @{
