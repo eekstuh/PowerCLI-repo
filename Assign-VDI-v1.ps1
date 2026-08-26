@@ -373,6 +373,26 @@ function Resolve-ConsultantStatusFromDistinguishedName {
     }
 }
 
+function Get-CommonNameFromDistinguishedName {
+    param(
+        [Parameter(Mandatory)]
+        [string]$DistinguishedName
+    )
+
+    $commonNameMatch = [regex]::Match($DistinguishedName, '^(?i:CN)=(?<Value>(?:\\[0-9A-Fa-f]{2}|\\.|[^,])+)')
+    if (-not $commonNameMatch.Success) {
+        return ''
+    }
+
+    $commonName = $commonNameMatch.Groups['Value'].Value
+    $commonName = [regex]::Replace(
+        $commonName,
+        '\\(?<Hex>[0-9A-Fa-f]{2})',
+        { param($match) [char][Convert]::ToInt32($match.Groups['Hex'].Value, 16) }
+    )
+    return [regex]::Replace($commonName, '\\(.)', '$1')
+}
+
 function Resolve-ActiveDirectoryUser {
     param(
         [Parameter(Mandatory)]
@@ -385,7 +405,7 @@ function Resolve-ActiveDirectoryUser {
     Initialize-ActiveDirectoryModule
     $lookupAccount = $AccountName.Trim()
     $queryParameters = @{
-        Properties  = @('DisplayName', 'GivenName', 'Surname', 'UserPrincipalName', 'SID', 'DistinguishedName')
+        Properties  = @('Name', 'DisplayName', 'GivenName', 'Surname', 'UserPrincipalName', 'SID', 'DistinguishedName')
         ErrorAction = 'Stop'
     }
     if (-not [string]::IsNullOrWhiteSpace($ADServer)) {
@@ -419,15 +439,27 @@ function Resolve-ActiveDirectoryUser {
     }
 
     $adUser = $matches[0]
-    $resolvedFullName = [regex]::Replace(([string]$adUser.DisplayName).Trim(), '\s+', ' ')
-    if ([string]::IsNullOrWhiteSpace($resolvedFullName)) {
-        $resolvedFullName = [regex]::Replace(("$($adUser.GivenName) $($adUser.Surname)").Trim(), '\s+', ' ')
+    $distinguishedName = [string]$adUser.DistinguishedName
+    if ([string]::IsNullOrWhiteSpace($distinguishedName)) {
+        throw "$Context '$lookupAccount' does not have a usable DistinguishedName in Active Directory."
     }
+
+    $resolvedFullName = [regex]::Replace(([string]$adUser.DisplayName).Trim(), '\s+', ' ')
+    $fullNameSource = 'DisplayName'
     if ([string]::IsNullOrWhiteSpace($resolvedFullName)) {
         $resolvedFullName = [regex]::Replace(([string]$adUser.Name).Trim(), '\s+', ' ')
+        $fullNameSource = 'Name'
     }
     if ([string]::IsNullOrWhiteSpace($resolvedFullName)) {
-        throw "$Context '$lookupAccount' does not have a usable DisplayName in Active Directory."
+        $resolvedFullName = [regex]::Replace(("$($adUser.GivenName) $($adUser.Surname)").Trim(), '\s+', ' ')
+        $fullNameSource = 'GivenName and Surname'
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedFullName)) {
+        $resolvedFullName = [regex]::Replace((Get-CommonNameFromDistinguishedName -DistinguishedName $distinguishedName).Trim(), '\s+', ' ')
+        $fullNameSource = 'DistinguishedName CN'
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedFullName)) {
+        throw "$Context '$lookupAccount' does not have a usable DisplayName, Name, GivenName/Surname, or CN in Active Directory."
     }
     if ($resolvedFullName -match '\s+-\s+') {
         throw "$Context '$lookupAccount' has the Active Directory display name '$resolvedFullName', which contains the reserved assignment delimiter ' - '."
@@ -451,14 +483,11 @@ function Resolve-ActiveDirectoryUser {
         throw "$Context '$lookupAccount' does not have a usable account name in Active Directory."
     }
 
-    $distinguishedName = [string]$adUser.DistinguishedName
-    if ([string]::IsNullOrWhiteSpace($distinguishedName)) {
-        throw "$Context '$lookupAccount' does not have a usable DistinguishedName in Active Directory."
-    }
     $consultantStatus = Resolve-ConsultantStatusFromDistinguishedName -DistinguishedName $distinguishedName -Context "$Context '$lookupAccount'"
 
     return [pscustomobject]@{
         FullName         = $resolvedFullName
+        FullNameSource   = $fullNameSource
         GuestAccountName = $guestAccountName
         SID              = $resolvedSid
         Consultant       = $consultantStatus.Consultant
@@ -475,7 +504,7 @@ function Resolve-InteractiveActiveDirectoryUser {
         try {
             $adUser = Resolve-ActiveDirectoryUser -AccountName $resolvedAccount -Context 'Active Directory account'
             $consultantLabel = if ($adUser.Consultant) { 'Yes' } else { 'No' }
-            Write-Host "Resolved Active Directory user: $($adUser.FullName) [$($adUser.GuestAccountName)]" -ForegroundColor Green
+            Write-Host "Resolved Active Directory user: $($adUser.FullName) (source: $($adUser.FullNameSource)) [$($adUser.GuestAccountName)]" -ForegroundColor Green
             Write-Host "Consultant: $consultantLabel ($($adUser.ConsultantOU))" -ForegroundColor Green
             return $adUser
         }
