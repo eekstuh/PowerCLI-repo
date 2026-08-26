@@ -49,13 +49,27 @@ For a plain account name, the script uses the guest computer's joined domain.
 Indicates whether "Consultant" is included before the user's name in the
 assigned virtual machine name.
 
+.PARAMETER InputCsvPath
+Optional path to a CSV file for assigning multiple users. Required columns are
+NamingConvention, FirstName, LastName, ADAccountName, and Consultant. Consultant
+accepts Y, Yes, True, 1, N, No, False, or 0. Interactive user fields cannot be
+combined with InputCsvPath.
+
 .EXAMPLE
 .\Assign-DevDesktop-v1.ps1
 
 .EXAMPLE
 .\Assign-DevDesktop-v1.ps1 -NamingConvention 11VMDEV -FirstName Jane -LastName Doe -ADAccountName jdoe -Consultant $false
+
+.EXAMPLE
+.\Assign-DevDesktop-v1.ps1 -InputCsvPath .\DesktopAssignments.csv
+
+The CSV format is:
+NamingConvention,FirstName,LastName,ADAccountName,Consultant
+11VMGC,Jane,Doe,jdoe,No
+11VMDEV,John,Smith,CONTOSO\jsmith,Yes
 #>
-[CmdletBinding(SupportsShouldProcess)]
+[CmdletBinding(DefaultParameterSetName = 'Interactive', SupportsShouldProcess)]
 param(
     [Parameter()]
     [string]$VIServer,
@@ -69,25 +83,32 @@ param(
     [Parameter()]
     [string]$ClusterName = 'Developer Desktops',
 
-    [Parameter()]
+    [Parameter(ParameterSetName = 'Interactive')]
     [ValidateSet('11VMGC', '11VMDEV', '11VMSAS')]
     [string]$NamingConvention,
 
-    [Parameter()]
+    [Parameter(ParameterSetName = 'Interactive')]
     [string]$FirstName,
 
-    [Parameter()]
+    [Parameter(ParameterSetName = 'Interactive')]
     [string]$LastName,
 
-    [Parameter()]
+    [Parameter(ParameterSetName = 'Interactive')]
     [string]$ADAccountName,
 
-    [Parameter()]
-    [Nullable[bool]]$Consultant
+    [Parameter(ParameterSetName = 'Interactive')]
+    [Nullable[bool]]$Consultant,
+
+    [Parameter(Mandatory, ParameterSetName = 'Csv')]
+    [ValidateNotNullOrEmpty()]
+    [string]$InputCsvPath
 )
 
 $ErrorActionPreference = 'Stop'
 $script:ExitRequested = $false
+$script:CompletedAssignments = 0
+$script:ResolvedGuestCredential = $null
+$script:InvocationParameterSet = $PSCmdlet.ParameterSetName
 $namingConventionWasSupplied = $PSBoundParameters.ContainsKey('NamingConvention')
 $firstNameWasSupplied = $PSBoundParameters.ContainsKey('FirstName')
 $lastNameWasSupplied = $PSBoundParameters.ContainsKey('LastName')
@@ -126,7 +147,12 @@ function Read-ExitAwareInput {
 
 function Stop-IfExitRequested {
     if ($script:ExitRequested) {
-        Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
+        if ($script:CompletedAssignments -gt 0) {
+            Write-Host "Cancelled. $($script:CompletedAssignments) assignment(s) were completed before cancellation." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
+        }
         exit 0
     }
 }
@@ -254,6 +280,7 @@ function Resolve-RequiredText {
         [bool]$WasSupplied,
 
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string]$Prompt,
 
         [Parameter(Mandatory)]
@@ -287,6 +314,135 @@ function Resolve-RequiredText {
             continue
         }
         return $value
+    }
+}
+
+function ConvertTo-ConsultantValue {
+    param(
+        [Parameter()]
+        [AllowNull()]
+        [object]$Value,
+
+        [Parameter(Mandatory)]
+        [string]$Context
+    )
+
+    $normalizedValue = ([string]$Value).Trim().ToLowerInvariant()
+    switch ($normalizedValue) {
+        { $_ -in @('y', 'yes', 'true', '1') } { return $true }
+        { $_ -in @('n', 'no', 'false', '0') } { return $false }
+        default { throw "$Context has an invalid Consultant value '$Value'. Use Y, Yes, True, 1, N, No, False, or 0." }
+    }
+}
+
+function Get-AssignmentWorkItems {
+    if ($script:InvocationParameterSet -eq 'Interactive') {
+        $selectedPrefix = Read-NamingConvention
+        $resolvedFirstName = Resolve-RequiredText -InitialValue $FirstName -WasSupplied $firstNameWasSupplied -Prompt "Enter the user's first name" -FieldName 'First name' -RejectAssignmentDelimiter
+        $resolvedLastName = Resolve-RequiredText -InitialValue $LastName -WasSupplied $lastNameWasSupplied -Prompt "Enter the user's last name" -FieldName 'Last name' -RejectAssignmentDelimiter
+        $resolvedADAccount = Resolve-RequiredText -InitialValue $ADAccountName -WasSupplied $adAccountWasSupplied -Prompt "Enter the user's Active Directory account name" -FieldName 'Active Directory account name'
+        $isConsultant = if ($consultantWasSupplied) {
+            [bool]$Consultant
+        }
+        else {
+            Read-YesNo -Prompt 'Is this user a consultant?'
+        }
+
+        return @(
+            [pscustomobject]@{
+                RowNumber        = $null
+                NamingConvention = $selectedPrefix
+                FirstName        = $resolvedFirstName
+                LastName         = $resolvedLastName
+                ADAccountName    = $resolvedADAccount
+                Consultant       = $isConsultant
+                ValidationError  = $null
+            }
+        )
+    }
+
+    $resolvedCsvPath = (Resolve-Path -LiteralPath $InputCsvPath -ErrorAction Stop).Path
+    if (-not (Test-Path -LiteralPath $resolvedCsvPath -PathType Leaf)) {
+        throw "CSV input path '$InputCsvPath' is not a file."
+    }
+
+    $rows = @(Import-Csv -LiteralPath $resolvedCsvPath -ErrorAction Stop)
+    if ($rows.Count -eq 0) {
+        throw "CSV input file '$resolvedCsvPath' does not contain any user rows."
+    }
+
+    $requiredColumns = @('NamingConvention', 'FirstName', 'LastName', 'ADAccountName', 'Consultant')
+    $columnNames = @($rows[0].PSObject.Properties.Name)
+    $missingColumns = @($requiredColumns | Where-Object { $columnNames -notcontains $_ })
+    if ($missingColumns.Count -gt 0) {
+        throw "CSV input file '$resolvedCsvPath' is missing required column(s): $($missingColumns -join ', ')."
+    }
+
+    Write-Host "Loaded $($rows.Count) user assignment row(s) from '$resolvedCsvPath'." -ForegroundColor Green
+    $workItems = for ($index = 0; $index -lt $rows.Count; $index++) {
+        $row = $rows[$index]
+        $rowNumber = $index + 2
+        try {
+            $prefix = ([string]$row.NamingConvention).Trim().ToUpperInvariant()
+            if ($prefix -notin @('11VMGC', '11VMDEV', '11VMSAS')) {
+                throw "CSV row $rowNumber has an invalid NamingConvention '$($row.NamingConvention)'. Use 11VMGC, 11VMDEV, or 11VMSAS."
+            }
+
+            [pscustomobject]@{
+                RowNumber        = $rowNumber
+                NamingConvention = $prefix
+                FirstName        = Resolve-RequiredText -InitialValue ([string]$row.FirstName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber FirstName" -RejectAssignmentDelimiter
+                LastName         = Resolve-RequiredText -InitialValue ([string]$row.LastName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber LastName" -RejectAssignmentDelimiter
+                ADAccountName    = Resolve-RequiredText -InitialValue ([string]$row.ADAccountName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber ADAccountName"
+                Consultant       = ConvertTo-ConsultantValue -Value $row.Consultant -Context "CSV row $rowNumber"
+                ValidationError  = $null
+            }
+        }
+        catch {
+            [pscustomobject]@{
+                RowNumber        = $rowNumber
+                NamingConvention = [string]$row.NamingConvention
+                FirstName        = [string]$row.FirstName
+                LastName         = [string]$row.LastName
+                ADAccountName    = [string]$row.ADAccountName
+                Consultant       = $null
+                ValidationError  = $_.Exception.Message
+            }
+        }
+    }
+
+    return @($workItems)
+}
+
+function New-AssignmentResult {
+    param(
+        [Parameter(Mandatory)]
+        [object]$WorkItem,
+
+        [Parameter(Mandatory)]
+        [string]$Outcome,
+
+        [Parameter(Mandatory)]
+        [string]$Message,
+
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$VMName = '',
+
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$ResolvedADAccount = ''
+    )
+
+    return [pscustomobject]@{
+        CsvRow             = $WorkItem.RowNumber
+        NamingConvention   = $WorkItem.NamingConvention
+        User               = "$($WorkItem.FirstName) $($WorkItem.LastName)".Trim()
+        RequestedADAccount = $WorkItem.ADAccountName
+        ResolvedADAccount  = $ResolvedADAccount
+        VMName             = $VMName
+        Outcome            = $Outcome
+        Message            = $Message
     }
 }
 
@@ -462,8 +618,13 @@ function Select-AssignmentVM {
 }
 
 function Get-WindowsGuestCredential {
+    if ($null -ne $script:ResolvedGuestCredential) {
+        return $script:ResolvedGuestCredential
+    }
+
     if ($null -ne $GuestCredential) {
-        return $GuestCredential
+        $script:ResolvedGuestCredential = $GuestCredential
+        return $script:ResolvedGuestCredential
     }
 
     $guestUserName = Read-ExitAwareInput -Prompt 'Enter the Windows guest administrator user name'
@@ -472,7 +633,8 @@ function Get-WindowsGuestCredential {
     if ($null -eq $credential) {
         throw 'The Windows guest credential prompt was cancelled.'
     }
-    return $credential
+    $script:ResolvedGuestCredential = $credential
+    return $script:ResolvedGuestCredential
 }
 
 function ConvertTo-GuestBase64 {
@@ -581,7 +743,7 @@ try {
     $accountSid = ([System.Security.Principal.NTAccount]::new($resolvedAccount)).Translate([System.Security.Principal.SecurityIdentifier])
 }
 catch {
-    throw "Active Directory account '$resolvedAccount' could not be resolved. $($_.Exception.Message)"
+    throw "__AD_ACCOUNT_NOT_FOUND__|$resolvedAccount|$($_.Exception.Message)"
 }
 
 $remoteDesktopGroupSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-555')
@@ -606,15 +768,55 @@ if ($verifiedMember.Count -eq 0) {
 }
 
 [pscustomobject]@{
-    Account   = $resolvedAccount
+    Account    = $resolvedAccount
     AccountSID = $accountSid.Value
-    Group     = $remoteDesktopGroup.Name
-    Added     = $added
+    Group      = $remoteDesktopGroup.Name
+    Added      = $added
+    Verified   = $true
 } | ConvertTo-Json -Compress
 '@
     $scriptText = $scriptText.Replace('__ACCOUNT_BASE64__', $encodedAccount)
     $json = Invoke-WindowsGuestPowerShell -VM $VM -Credential $Credential -ScriptText $scriptText
-    return $json | ConvertFrom-Json -ErrorAction Stop
+    $result = $json | ConvertFrom-Json -ErrorAction Stop
+    if (-not [bool]$result.Verified -or [string]::IsNullOrWhiteSpace([string]$result.AccountSID)) {
+        throw 'The Windows guest did not return successful Remote Desktop Users membership verification.'
+    }
+    return $result
+}
+
+function Add-GuestRemoteDesktopUserWithCorrection {
+    param(
+        [Parameter(Mandatory)]
+        [object]$VM,
+
+        [Parameter(Mandatory)]
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory)]
+        [string]$InitialAccountName
+    )
+
+    $accountName = $InitialAccountName
+    while ($true) {
+        try {
+            $guestResult = Add-GuestRemoteDesktopUser -VM $VM -Credential $Credential -AccountName $accountName
+            return [pscustomobject]@{
+                AccountInput = $accountName
+                GuestResult  = $guestResult
+            }
+        }
+        catch {
+            $message = $_.Exception.Message
+            $accountNotFoundMatch = [regex]::Match($message, '__AD_ACCOUNT_NOT_FOUND__\|(?<Account>[^|]+)\|')
+            if (-not $accountNotFoundMatch.Success) {
+                throw
+            }
+
+            $unresolvedAccount = $accountNotFoundMatch.Groups['Account'].Value
+            Write-Warning "Active Directory account '$unresolvedAccount' could not be found. The VM has not been renamed."
+            $accountName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt "Enter the correct Active Directory account for '$($VM.Name)'" -FieldName 'Active Directory account name'
+        }
+    }
 }
 
 function Remove-GuestRemoteDesktopUser {
@@ -666,77 +868,106 @@ try {
 
     $cluster = Get-ExactCluster -Server $server -Name $ClusterName
     Write-Host "Using cluster '$($cluster.Name)'." -ForegroundColor Green
+    $workItems = @(Get-AssignmentWorkItems)
+    $results = @()
 
-    $selectedPrefix = Read-NamingConvention
-    $resolvedFirstName = Resolve-RequiredText -InitialValue $FirstName -WasSupplied $firstNameWasSupplied -Prompt "Enter the user's first name" -FieldName 'First name' -RejectAssignmentDelimiter
-    $resolvedLastName = Resolve-RequiredText -InitialValue $LastName -WasSupplied $lastNameWasSupplied -Prompt "Enter the user's last name" -FieldName 'Last name' -RejectAssignmentDelimiter
-    $resolvedADAccount = Resolve-RequiredText -InitialValue $ADAccountName -WasSupplied $adAccountWasSupplied -Prompt "Enter the user's Active Directory account name" -FieldName 'Active Directory account name'
-    $isConsultant = if ($consultantWasSupplied) {
-        [bool]$Consultant
-    }
-    else {
-        Read-YesNo -Prompt 'Is this user a consultant?'
-    }
+    for ($index = 0; $index -lt $workItems.Count; $index++) {
+        $workItem = $workItems[$index]
+        $itemLabel = if ($null -ne $workItem.RowNumber) { "CSV row $($workItem.RowNumber)" } else { 'Interactive assignment' }
+        Write-Host "`n[$($index + 1)/$($workItems.Count)] Processing $itemLabel..." -ForegroundColor Cyan
 
-    $personName = "$resolvedFirstName $resolvedLastName"
-    $assignmentLabel = if ($isConsultant) { "Consultant $personName" } else { $personName }
-    $allVirtualMachines = @(Get-VM -Location $cluster -Server $server -ErrorAction Stop)
-    Assert-UserIsNotAlreadyAssigned -VirtualMachines $allVirtualMachines -FirstName $resolvedFirstName -LastName $resolvedLastName
-
-    $inventory = @(Get-DesktopInventory -VirtualMachines $allVirtualMachines -Prefix $selectedPrefix)
-    $candidates = @(Get-AssignmentCandidates -Inventory $inventory -Prefix $selectedPrefix)
-    $selection = Select-AssignmentVM -Candidates $candidates -AllVirtualMachines $allVirtualMachines -Server $server -AssignmentLabel $assignmentLabel -ADAccount $resolvedADAccount
-    if ($null -eq $selection) {
-        Write-Host 'No virtual machine was selected. No changes were made.' -ForegroundColor Yellow
-        return
-    }
-
-    $selectedVM = $selection.VM
-    $targetVMName = $selection.TargetName
-
-    if (-not $PSCmdlet.ShouldProcess($selectedVM.Name, "Grant Remote Desktop access to '$resolvedADAccount' and rename the VM to '$targetVMName'")) {
-        Write-Host 'No changes were made.' -ForegroundColor Yellow
-        return
-    }
-
-    $guestAdminCredential = Get-WindowsGuestCredential
-    Write-Host "`nGranting Remote Desktop access inside '$($selectedVM.Name)' through VMware Tools..." -ForegroundColor Cyan
-    $guestResult = Add-GuestRemoteDesktopUser -VM $selectedVM -Credential $guestAdminCredential -AccountName $resolvedADAccount
-    if ([bool]$guestResult.Added) {
-        Write-Host "Added '$($guestResult.Account)' to local group '$($guestResult.Group)'." -ForegroundColor Green
-    }
-    else {
-        Write-Host "'$($guestResult.Account)' is already a member of local group '$($guestResult.Group)'." -ForegroundColor Green
-    }
-
-    Write-Host "Renaming '$($selectedVM.Name)' to '$targetVMName' in vSphere..." -ForegroundColor Cyan
-    try {
-        Set-VM -VM $selectedVM -Name $targetVMName -Server $server -Confirm:$false -ErrorAction Stop | Out-Null
-        $verifiedVM = Get-VM -Id $selectedVM.Id -Server $server -ErrorAction Stop
-        if ($verifiedVM.Name -cne $targetVMName) {
-            throw "Rename verification returned '$($verifiedVM.Name)' instead of '$targetVMName'."
+        if (-not [string]::IsNullOrWhiteSpace([string]$workItem.ValidationError)) {
+            Write-Warning $workItem.ValidationError
+            $results += New-AssignmentResult -WorkItem $workItem -Outcome 'InputFailed' -Message $workItem.ValidationError
+            continue
         }
-    }
-    catch {
-        $renameError = $_.Exception.Message
-        if ([bool]$guestResult.Added) {
+
+        $selectedVM = $null
+        $targetVMName = ''
+        $guestResult = $null
+        try {
+            $personName = "$($workItem.FirstName) $($workItem.LastName)"
+            $assignmentLabel = if ([bool]$workItem.Consultant) { "Consultant $personName" } else { $personName }
+            $allVirtualMachines = @(Get-VM -Location $cluster -Server $server -ErrorAction Stop)
+            Assert-UserIsNotAlreadyAssigned -VirtualMachines $allVirtualMachines -FirstName $workItem.FirstName -LastName $workItem.LastName
+
+            $inventory = @(Get-DesktopInventory -VirtualMachines $allVirtualMachines -Prefix $workItem.NamingConvention)
+            $candidates = @(Get-AssignmentCandidates -Inventory $inventory -Prefix $workItem.NamingConvention)
+            $selection = Select-AssignmentVM -Candidates $candidates -AllVirtualMachines $allVirtualMachines -Server $server -AssignmentLabel $assignmentLabel -ADAccount $workItem.ADAccountName
+            if ($null -eq $selection) {
+                $message = 'All available candidates were skipped by the operator.'
+                Write-Host "$message No changes were made for '$personName'." -ForegroundColor Yellow
+                $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Skipped' -Message $message
+                continue
+            }
+
+            $selectedVM = $selection.VM
+            $targetVMName = $selection.TargetName
+            if (-not $PSCmdlet.ShouldProcess($selectedVM.Name, "Grant Remote Desktop access to '$($workItem.ADAccountName)' and rename the VM to '$targetVMName'")) {
+                $results += New-AssignmentResult -WorkItem $workItem -Outcome 'WhatIf' -Message 'No changes were requested by ShouldProcess.' -VMName $selectedVM.Name
+                continue
+            }
+
+            $guestAdminCredential = Get-WindowsGuestCredential
+            Write-Host "`nGranting Remote Desktop access inside '$($selectedVM.Name)' through VMware Tools..." -ForegroundColor Cyan
+            $accountResult = Add-GuestRemoteDesktopUserWithCorrection -VM $selectedVM -Credential $guestAdminCredential -InitialAccountName $workItem.ADAccountName
+            $guestResult = $accountResult.GuestResult
+            if (-not [bool]$guestResult.Verified) {
+                throw 'Remote Desktop Users membership verification was not successful.'
+            }
+
+            if ([bool]$guestResult.Added) {
+                Write-Host "Added '$($guestResult.Account)' to local group '$($guestResult.Group)'." -ForegroundColor Green
+            }
+            else {
+                Write-Host "'$($guestResult.Account)' was already a member of local group '$($guestResult.Group)'." -ForegroundColor Green
+            }
+            Write-Host "Verified '$($guestResult.Account)' as a member of '$($guestResult.Group)'." -ForegroundColor Green
+
+            Write-Host "Renaming '$($selectedVM.Name)' to '$targetVMName' in vSphere..." -ForegroundColor Cyan
             try {
-                [void](Remove-GuestRemoteDesktopUser -VM $selectedVM -Credential $guestAdminCredential -AccountSID ([string]$guestResult.AccountSID))
-                Write-Warning "The vSphere rename failed. The newly added Remote Desktop Users membership was removed."
+                Set-VM -VM $selectedVM -Name $targetVMName -Server $server -Confirm:$false -ErrorAction Stop | Out-Null
+                $verifiedVM = Get-VM -Id $selectedVM.Id -Server $server -ErrorAction Stop
+                if ($verifiedVM.Name -cne $targetVMName) {
+                    throw "Rename verification returned '$($verifiedVM.Name)' instead of '$targetVMName'."
+                }
             }
             catch {
-                Write-Warning "The vSphere rename failed, and the guest membership rollback also failed: $($_.Exception.Message)"
+                $renameError = $_.Exception.Message
+                if ([bool]$guestResult.Added) {
+                    try {
+                        [void](Remove-GuestRemoteDesktopUser -VM $selectedVM -Credential $guestAdminCredential -AccountSID ([string]$guestResult.AccountSID))
+                        Write-Warning 'The vSphere rename failed. The newly added Remote Desktop Users membership was removed.'
+                    }
+                    catch {
+                        Write-Warning "The vSphere rename failed, and the guest membership rollback also failed: $($_.Exception.Message)"
+                    }
+                }
+                throw "The vSphere rename failed: $renameError"
             }
+
+            $script:CompletedAssignments++
+            Write-Host "Assignment completed successfully for '$personName' on '$targetVMName'." -ForegroundColor Green
+            $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Completed' -Message 'Remote Desktop access and vSphere rename were verified.' -VMName $targetVMName -ResolvedADAccount $guestResult.Account
         }
-        throw "The vSphere rename failed: $renameError"
+        catch {
+            $message = $_.Exception.Message
+            Write-Warning "Assignment failed for '$($workItem.FirstName) $($workItem.LastName)': $message"
+            $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Failed' -Message $message -VMName $(if ($null -ne $selectedVM) { $selectedVM.Name } else { '' }) -ResolvedADAccount $(if ($null -ne $guestResult) { [string]$guestResult.Account } else { '' })
+        }
     }
 
-    Write-Host "`nAssignment completed successfully." -ForegroundColor Green
-    Write-Host "  VM name:    $targetVMName"
-    Write-Host "  User:       $personName"
-    Write-Host "  Consultant: $(if ($isConsultant) { 'Yes' } else { 'No' })"
-    Write-Host "  AD account: $($guestResult.Account)"
-    Write-Host "  Guest group: $($guestResult.Group)"
+    Write-Host "`nAssignment results:" -ForegroundColor Cyan
+    $results |
+        Format-Table CsvRow, NamingConvention, User, RequestedADAccount, ResolvedADAccount, VMName, Outcome -AutoSize -Wrap |
+        Out-Host
+
+    $failedResults = @($results | Where-Object { $_.Outcome -in @('InputFailed', 'Failed') })
+    if ($failedResults.Count -gt 0) {
+        Write-Host "`nFailure details:" -ForegroundColor Yellow
+        $failedResults | Select-Object CsvRow, User, Outcome, Message | Format-List | Out-Host
+        throw "$($failedResults.Count) assignment(s) failed. Review the results above."
+    }
 }
 catch {
     Write-Error $_.Exception.Message
