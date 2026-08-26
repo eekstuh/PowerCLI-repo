@@ -3,11 +3,12 @@
 Assigns an available developer desktop virtual machine to a user.
 
 .DESCRIPTION
-Selects a naming convention, gathers the user's name and Active Directory
-account, and determines whether the user is a consultant. The script finds the
-highest-numbered assigned virtual machine for the selected naming convention in
-the Developer Desktops cluster. It then offers powered-on, unassigned virtual
-machines with higher numbers in ascending order.
+Selects a naming convention, gathers the user's Active Directory account, and
+determines whether the user is a consultant. The script retrieves the user's
+full name from Active Directory, finds the highest-numbered assigned virtual
+machine for the selected naming convention in the Developer Desktops cluster,
+and offers powered-on, unassigned virtual machines with higher numbers in
+ascending order.
 
 After the operator accepts a virtual machine, the script uses VMware Tools guest
 operations to add the user's Active Directory account to the built-in local
@@ -31,6 +32,10 @@ operations.
 .PARAMETER ClusterName
 Cluster containing the developer desktop virtual machines.
 
+.PARAMETER ADServer
+Optional Active Directory domain controller or domain name used for user
+lookups. If omitted, the ActiveDirectory module uses its default domain.
+
 .PARAMETER NamingConvention
 Virtual machine naming convention: 11VMGC, 11VMDEV, 11VMSAS, or SPECIFIC. The
 SPECIFIC option assigns an exact VM name instead of selecting from the numbered
@@ -40,23 +45,12 @@ pool above the latest assignment cutoff.
 Exact virtual machine name to use with NamingConvention SPECIFIC. If omitted in
 interactive mode, the script prompts for it.
 
-.PARAMETER FirstName
-Optional user's first name for backward-compatible parameter-driven execution.
-FirstName and LastName must be supplied together and cannot be combined with
-FullName.
-
-.PARAMETER LastName
-Optional user's last name for backward-compatible parameter-driven execution.
-
-.PARAMETER FullName
-User's first and last name as they should appear in the vSphere inventory name,
-for example "John Smith". If no name parameters are supplied, the script prompts
-once for the full name.
-
 .PARAMETER ADAccountName
 Active Directory account to add to the guest's local Remote Desktop Users group.
 A plain sAMAccountName, DOMAIN\username, or user principal name can be supplied.
-For a plain account name, the script uses the guest computer's joined domain.
+The script validates the account and retrieves its DisplayName from Active
+Directory. When available, the account's canonical user principal name is used
+for the VMware Tools guest operation.
 
 .PARAMETER Consultant
 Indicates whether "Consultant" is included before the user's name in the
@@ -64,28 +58,27 @@ assigned virtual machine name.
 
 .PARAMETER InputCsvPath
 Optional path to a CSV file for assigning multiple users. Required columns are
-NamingConvention, FullName, ADAccountName, and Consultant. FullName must include
-at least a first name and a last name separated by a space. Consultant accepts Y,
-Yes, True, 1, N, No, False, or 0. Interactive user fields cannot be combined with
+NamingConvention, ADAccountName, and Consultant. Consultant accepts Y, Yes,
+True, 1, N, No, False, or 0. Interactive user fields cannot be combined with
 InputCsvPath. For a SPECIFIC row, include a VMName column and the exact virtual
-machine name.
+machine name. The user's full name is retrieved from Active Directory.
 
 .EXAMPLE
 .\Assign-VDI-v1.ps1
 
 .EXAMPLE
-.\Assign-VDI-v1.ps1 -NamingConvention 11VMDEV -FullName 'Jane Doe' -ADAccountName jdoe -Consultant $false
+.\Assign-VDI-v1.ps1 -NamingConvention 11VMDEV -ADAccountName jdoe -Consultant $false
 
 .EXAMPLE
-.\Assign-VDI-v1.ps1 -NamingConvention SPECIFIC -VMName 11VMDEV501 -FullName 'Jane Doe' -ADAccountName jdoe -Consultant $false
+.\Assign-VDI-v1.ps1 -NamingConvention SPECIFIC -VMName 11VMDEV501 -ADAccountName jdoe -Consultant $false
 
 .EXAMPLE
 .\Assign-VDI-v1.ps1 -InputCsvPath .\DesktopAssignments.csv
 
 The CSV format is:
-NamingConvention,VMName,FullName,ADAccountName,Consultant
-11VMGC,,"Jane Doe",jdoe,No
-SPECIFIC,11VMDEV501,"John Smith",CONTOSO\jsmith,Yes
+NamingConvention,VMName,ADAccountName,Consultant
+11VMGC,,jdoe,No
+SPECIFIC,11VMDEV501,CONTOSO\jsmith,Yes
 #>
 [CmdletBinding(DefaultParameterSetName = 'Interactive', SupportsShouldProcess)]
 param(
@@ -101,21 +94,15 @@ param(
     [Parameter()]
     [string]$ClusterName = 'Developer Desktops',
 
+    [Parameter()]
+    [string]$ADServer,
+
     [Parameter(ParameterSetName = 'Interactive')]
     [ValidateSet('11VMGC', '11VMDEV', '11VMSAS', 'SPECIFIC', 'CUSTOM')]
     [string]$NamingConvention,
 
     [Parameter(ParameterSetName = 'Interactive')]
     [string]$VMName,
-
-    [Parameter(ParameterSetName = 'Interactive')]
-    [string]$FirstName,
-
-    [Parameter(ParameterSetName = 'Interactive')]
-    [string]$LastName,
-
-    [Parameter(ParameterSetName = 'Interactive')]
-    [string]$FullName,
 
     [Parameter(ParameterSetName = 'Interactive')]
     [string]$ADAccountName,
@@ -135,9 +122,6 @@ $script:ResolvedGuestCredential = $null
 $script:InvocationParameterSet = $PSCmdlet.ParameterSetName
 $namingConventionWasSupplied = $PSBoundParameters.ContainsKey('NamingConvention')
 $vmNameWasSupplied = $PSBoundParameters.ContainsKey('VMName')
-$firstNameWasSupplied = $PSBoundParameters.ContainsKey('FirstName')
-$lastNameWasSupplied = $PSBoundParameters.ContainsKey('LastName')
-$fullNameWasSupplied = $PSBoundParameters.ContainsKey('FullName')
 $adAccountWasSupplied = $PSBoundParameters.ContainsKey('ADAccountName')
 $consultantWasSupplied = $PSBoundParameters.ContainsKey('Consultant')
 
@@ -350,52 +334,129 @@ function Resolve-RequiredText {
     }
 }
 
-function Resolve-InteractivePersonName {
-    if ($fullNameWasSupplied -and ($firstNameWasSupplied -or $lastNameWasSupplied)) {
-        throw 'FullName cannot be combined with FirstName or LastName.'
-    }
-    if ($firstNameWasSupplied -xor $lastNameWasSupplied) {
-        throw 'FirstName and LastName must be supplied together.'
+function Initialize-ActiveDirectoryModule {
+    if ($null -ne (Get-Command -Name Get-ADUser -ErrorAction SilentlyContinue)) {
+        return
     }
 
-    if ($firstNameWasSupplied -and $lastNameWasSupplied) {
-        return [pscustomobject]@{
-            FirstName = Resolve-RequiredText -InitialValue $FirstName -WasSupplied $true -Prompt '' -FieldName 'First name' -RejectAssignmentDelimiter
-            LastName  = Resolve-RequiredText -InitialValue $LastName -WasSupplied $true -Prompt '' -FieldName 'Last name' -RejectAssignmentDelimiter
-        }
+    try {
+        Import-Module ActiveDirectory -ErrorAction Stop
     }
-
-    while ($true) {
-        $resolvedFullName = Resolve-RequiredText -InitialValue $FullName -WasSupplied $fullNameWasSupplied -Prompt "Enter the user's first and last name (for example, John Smith)" -FieldName 'Full name' -RejectAssignmentDelimiter
-        try {
-            return ConvertTo-PersonNameParts -FullName $resolvedFullName -Context 'FullName'
-        }
-        catch {
-            if ($fullNameWasSupplied) {
-                throw
-            }
-            Write-Warning 'Enter at least a first name and a last name separated by a space.'
-        }
+    catch {
+        throw "The ActiveDirectory PowerShell module is required to retrieve user names. Install the RSAT Active Directory tools and try again. $($_.Exception.Message)"
     }
 }
 
-function ConvertTo-PersonNameParts {
+function ConvertTo-LdapFilterValue {
     param(
         [Parameter(Mandatory)]
-        [string]$FullName,
+        [string]$Value
+    )
+
+    return $Value.Replace('\', '\5c').Replace('*', '\2a').Replace('(', '\28').Replace(')', '\29').Replace(([char]0).ToString(), '\00')
+}
+
+function Resolve-ActiveDirectoryUser {
+    param(
+        [Parameter(Mandatory)]
+        [string]$AccountName,
 
         [Parameter(Mandatory)]
         [string]$Context
     )
 
-    $nameMatch = [regex]::Match($FullName, '^(?<FirstName>\S+)\s+(?<LastName>.+)$')
-    if (-not $nameMatch.Success) {
-        throw "$Context must include at least a first name and a last name separated by a space."
+    Initialize-ActiveDirectoryModule
+    $lookupAccount = $AccountName.Trim()
+    $queryParameters = @{
+        Properties  = @('DisplayName', 'GivenName', 'Surname', 'UserPrincipalName', 'SID')
+        ErrorAction = 'Stop'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ADServer)) {
+        $queryParameters.Server = $ADServer
+    }
+
+    try {
+        $matches = if ($lookupAccount -match '@') {
+            $escapedUpn = ConvertTo-LdapFilterValue -Value $lookupAccount
+            @(Get-ADUser -LDAPFilter "(userPrincipalName=$escapedUpn)" @queryParameters)
+        }
+        else {
+            $identity = if ($lookupAccount -match '^[^\\]+\\(?<SamAccountName>.+)$') {
+                $Matches['SamAccountName']
+            }
+            else {
+                $lookupAccount
+            }
+            @(Get-ADUser -Identity $identity @queryParameters)
+        }
+    }
+    catch {
+        throw "$Context '$lookupAccount' could not be resolved in Active Directory. $($_.Exception.Message)"
+    }
+
+    if ($matches.Count -eq 0) {
+        throw "$Context '$lookupAccount' was not found in Active Directory."
+    }
+    if ($matches.Count -gt 1) {
+        throw "$Context '$lookupAccount' matched more than one Active Directory user."
+    }
+
+    $adUser = $matches[0]
+    $resolvedFullName = [regex]::Replace(([string]$adUser.DisplayName).Trim(), '\s+', ' ')
+    if ([string]::IsNullOrWhiteSpace($resolvedFullName)) {
+        $resolvedFullName = [regex]::Replace(("$($adUser.GivenName) $($adUser.Surname)").Trim(), '\s+', ' ')
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedFullName)) {
+        $resolvedFullName = [regex]::Replace(([string]$adUser.Name).Trim(), '\s+', ' ')
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedFullName)) {
+        throw "$Context '$lookupAccount' does not have a usable DisplayName in Active Directory."
+    }
+    if ($resolvedFullName -match '\s+-\s+') {
+        throw "$Context '$lookupAccount' has the Active Directory display name '$resolvedFullName', which contains the reserved assignment delimiter ' - '."
+    }
+
+    $resolvedSid = [string]$adUser.SID
+    if ([string]::IsNullOrWhiteSpace($resolvedSid)) {
+        throw "$Context '$lookupAccount' does not have a usable SID in Active Directory."
+    }
+
+    $guestAccountName = if (-not [string]::IsNullOrWhiteSpace([string]$adUser.UserPrincipalName)) {
+        [string]$adUser.UserPrincipalName
+    }
+    elseif ($lookupAccount -match '\\') {
+        $lookupAccount
+    }
+    else {
+        [string]$adUser.SamAccountName
+    }
+    if ([string]::IsNullOrWhiteSpace($guestAccountName)) {
+        throw "$Context '$lookupAccount' does not have a usable account name in Active Directory."
     }
 
     return [pscustomobject]@{
-        FirstName = $nameMatch.Groups['FirstName'].Value
-        LastName  = $nameMatch.Groups['LastName'].Value
+        FullName         = $resolvedFullName
+        GuestAccountName = $guestAccountName
+        SID              = $resolvedSid
+    }
+}
+
+function Resolve-InteractiveActiveDirectoryUser {
+    $candidateAccount = $ADAccountName
+    $accountWasSupplied = $adAccountWasSupplied
+
+    while ($true) {
+        $resolvedAccount = Resolve-RequiredText -InitialValue $candidateAccount -WasSupplied $accountWasSupplied -Prompt "Enter the user's Active Directory account name" -FieldName 'Active Directory account name'
+        try {
+            $adUser = Resolve-ActiveDirectoryUser -AccountName $resolvedAccount -Context 'Active Directory account'
+            Write-Host "Resolved Active Directory user: $($adUser.FullName) [$($adUser.GuestAccountName)]" -ForegroundColor Green
+            return $adUser
+        }
+        catch {
+            Write-Warning $_.Exception.Message
+            $candidateAccount = ''
+            $accountWasSupplied = $false
+        }
     }
 }
 
@@ -429,8 +490,7 @@ function Get-AssignmentWorkItems {
             }
             ''
         }
-        $resolvedPersonName = Resolve-InteractivePersonName
-        $resolvedADAccount = Resolve-RequiredText -InitialValue $ADAccountName -WasSupplied $adAccountWasSupplied -Prompt "Enter the user's Active Directory account name" -FieldName 'Active Directory account name'
+        $resolvedADUser = Resolve-InteractiveActiveDirectoryUser
         $isConsultant = if ($consultantWasSupplied) {
             [bool]$Consultant
         }
@@ -443,9 +503,9 @@ function Get-AssignmentWorkItems {
                 RowNumber        = $null
                 NamingConvention = $selectedPrefix
                 RequestedVMName  = $requestedVMName
-                FirstName        = $resolvedPersonName.FirstName
-                LastName         = $resolvedPersonName.LastName
-                ADAccountName    = $resolvedADAccount
+                FullName         = $resolvedADUser.FullName
+                ADAccountName    = $resolvedADUser.GuestAccountName
+                ADUserSID        = $resolvedADUser.SID
                 Consultant       = $isConsultant
                 ValidationError  = $null
             }
@@ -462,7 +522,7 @@ function Get-AssignmentWorkItems {
         throw "CSV input file '$resolvedCsvPath' does not contain any user rows."
     }
 
-    $requiredColumns = @('NamingConvention', 'FullName', 'ADAccountName', 'Consultant')
+    $requiredColumns = @('NamingConvention', 'ADAccountName', 'Consultant')
     $columnNames = @($rows[0].PSObject.Properties.Name)
     $missingColumns = @($requiredColumns | Where-Object { $columnNames -notcontains $_ })
     if ($missingColumns.Count -gt 0) {
@@ -487,16 +547,16 @@ function Get-AssignmentWorkItems {
             }
             else { '' }
 
-            $resolvedFullName = Resolve-RequiredText -InitialValue ([string]$row.FullName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber FullName" -RejectAssignmentDelimiter
-            $personNameParts = ConvertTo-PersonNameParts -FullName $resolvedFullName -Context "CSV row $rowNumber FullName"
+            $resolvedADAccount = Resolve-RequiredText -InitialValue ([string]$row.ADAccountName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber ADAccountName"
+            $resolvedADUser = Resolve-ActiveDirectoryUser -AccountName $resolvedADAccount -Context "CSV row $rowNumber ADAccountName"
 
             [pscustomobject]@{
                 RowNumber        = $rowNumber
                 NamingConvention = $prefix
                 RequestedVMName  = $requestedVMName
-                FirstName        = $personNameParts.FirstName
-                LastName         = $personNameParts.LastName
-                ADAccountName    = Resolve-RequiredText -InitialValue ([string]$row.ADAccountName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber ADAccountName"
+                FullName         = $resolvedADUser.FullName
+                ADAccountName    = $resolvedADUser.GuestAccountName
+                ADUserSID        = $resolvedADUser.SID
                 Consultant       = ConvertTo-ConsultantValue -Value $row.Consultant -Context "CSV row $rowNumber"
                 ValidationError  = $null
             }
@@ -506,9 +566,9 @@ function Get-AssignmentWorkItems {
                 RowNumber        = $rowNumber
                 NamingConvention = [string]$row.NamingConvention
                 RequestedVMName  = [string]$row.VMName
-                FirstName        = [string]$row.FullName
-                LastName         = ''
+                FullName         = ''
                 ADAccountName    = [string]$row.ADAccountName
+                ADUserSID        = ''
                 Consultant       = $null
                 ValidationError  = $_.Exception.Message
             }
@@ -542,7 +602,7 @@ function New-AssignmentResult {
         CsvRow             = $WorkItem.RowNumber
         NamingConvention   = $WorkItem.NamingConvention
         RequestedVMName    = $WorkItem.RequestedVMName
-        User               = "$($WorkItem.FirstName) $($WorkItem.LastName)".Trim()
+        User               = [string]$WorkItem.FullName
         RequestedADAccount = $WorkItem.ADAccountName
         ResolvedADAccount  = $ResolvedADAccount
         VMName             = $VMName
@@ -585,19 +645,15 @@ function Assert-UserIsNotAlreadyAssigned {
         [object[]]$VirtualMachines,
 
         [Parameter(Mandatory)]
-        [string]$FirstName,
-
-        [Parameter(Mandatory)]
-        [string]$LastName
+        [string]$FullName
     )
 
-    $personName = "$FirstName $LastName"
-    $escapedPersonName = [regex]::Escape($personName)
+    $escapedPersonName = [regex]::Escape($FullName)
     $pattern = "^.+\s+-\s+(?:Consultant\s+)?$escapedPersonName$"
     $matches = @($VirtualMachines | Where-Object { $_.Name -match $pattern })
     if ($matches.Count -gt 0) {
         $names = $matches.Name -join ', '
-        throw "A virtual machine assignment for '$personName' already exists in the cluster: $names"
+        throw "A virtual machine assignment for '$FullName' already exists in the cluster: $names"
     }
 }
 
@@ -985,7 +1041,10 @@ function Add-GuestRemoteDesktopUserWithCorrection {
         [System.Management.Automation.PSCredential]$Credential,
 
         [Parameter(Mandatory)]
-        [string]$InitialAccountName
+        [string]$InitialAccountName,
+
+        [Parameter(Mandatory)]
+        [string]$ExpectedADUserSID
     )
 
     $accountName = $InitialAccountName
@@ -1006,7 +1065,24 @@ function Add-GuestRemoteDesktopUserWithCorrection {
 
             $unresolvedAccount = $accountNotFoundMatch.Groups['Account'].Value
             Write-Warning "Active Directory account '$unresolvedAccount' could not be found. The VM has not been renamed."
-            $accountName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt "Enter the correct Active Directory account for '$($VM.Name)'" -FieldName 'Active Directory account name'
+            while ($true) {
+                $correctedAccount = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt "Enter the correct Active Directory account for '$($VM.Name)'" -FieldName 'Active Directory account name'
+                try {
+                    $correctedADUser = Resolve-ActiveDirectoryUser -AccountName $correctedAccount -Context 'Corrected Active Directory account'
+                }
+                catch {
+                    Write-Warning $_.Exception.Message
+                    continue
+                }
+
+                if ([string]$correctedADUser.SID -ne $ExpectedADUserSID) {
+                    Write-Warning "The corrected account belongs to '$($correctedADUser.FullName)', not the selected Active Directory user. Enter another account for the same user."
+                    continue
+                }
+
+                $accountName = $correctedADUser.GuestAccountName
+                break
+            }
         }
     }
 }
@@ -1060,6 +1136,7 @@ try {
 
     $cluster = Get-ExactCluster -Server $server -Name $ClusterName
     Write-Host "Using cluster '$($cluster.Name)'." -ForegroundColor Green
+    Initialize-ActiveDirectoryModule
     $workItems = @(Get-AssignmentWorkItems)
     $results = @()
 
@@ -1078,10 +1155,10 @@ try {
         $targetVMName = ''
         $guestResult = $null
         try {
-            $personName = "$($workItem.FirstName) $($workItem.LastName)"
+            $personName = [string]$workItem.FullName
             $assignmentLabel = if ([bool]$workItem.Consultant) { "Consultant $personName" } else { $personName }
             $allVirtualMachines = @(Get-VM -Location $cluster -Server $server -ErrorAction Stop)
-            Assert-UserIsNotAlreadyAssigned -VirtualMachines $allVirtualMachines -FirstName $workItem.FirstName -LastName $workItem.LastName
+            Assert-UserIsNotAlreadyAssigned -VirtualMachines $allVirtualMachines -FullName $workItem.FullName
 
             if ($workItem.NamingConvention -eq 'SPECIFIC') {
                 $specificSelectionParameters = @{
@@ -1120,10 +1197,16 @@ try {
 
             $guestAdminCredential = Get-WindowsGuestCredential
             Write-Host "`nGranting Remote Desktop access inside '$($selectedVM.Name)' through VMware Tools..." -ForegroundColor Cyan
-            $accountResult = Add-GuestRemoteDesktopUserWithCorrection -VM $selectedVM -Credential $guestAdminCredential -InitialAccountName $workItem.ADAccountName
+            $accountResult = Add-GuestRemoteDesktopUserWithCorrection -VM $selectedVM -Credential $guestAdminCredential -InitialAccountName $workItem.ADAccountName -ExpectedADUserSID $workItem.ADUserSID
             $guestResult = $accountResult.GuestResult
             if (-not [bool]$guestResult.Verified) {
                 throw 'Remote Desktop Users membership verification was not successful.'
+            }
+            if ([string]$guestResult.AccountSID -ne [string]$workItem.ADUserSID) {
+                if ([bool]$guestResult.Added) {
+                    [void](Remove-GuestRemoteDesktopUser -VM $selectedVM -Credential $guestAdminCredential -AccountSID ([string]$guestResult.AccountSID))
+                }
+                throw "The Windows guest resolved a different Active Directory user SID than the account selected on the management system. The VM was not renamed."
             }
 
             if ([bool]$guestResult.Added) {
@@ -1162,7 +1245,8 @@ try {
         }
         catch {
             $message = $_.Exception.Message
-            Write-Warning "Assignment failed for '$($workItem.FirstName) $($workItem.LastName)': $message"
+            $failedUser = if ([string]::IsNullOrWhiteSpace([string]$workItem.FullName)) { $workItem.ADAccountName } else { $workItem.FullName }
+            Write-Warning "Assignment failed for '$failedUser': $message"
             $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Failed' -Message $message -VMName $(if ($null -ne $selectedVM) { $selectedVM.Name } else { '' }) -ResolvedADAccount $(if ($null -ne $guestResult) { [string]$guestResult.Account } else { '' })
         }
     }
