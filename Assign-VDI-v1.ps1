@@ -1105,7 +1105,7 @@ function Get-WindowsGuestCredential {
         return $script:ResolvedGuestCredential
     }
 
-    $guestUserName = Read-ExitAwareInput -Prompt 'Enter the Windows guest administrator user name'
+    $guestUserName = Read-ExitAwareInput -Prompt 'Enter your Windows Desktop Administrator credentials to proceed'
     Stop-IfExitRequested
     $credential = Get-Credential -UserName $guestUserName -Message 'Enter the Windows guest administrator password used by VMware Tools guest operations.'
     if ($null -eq $credential) {
