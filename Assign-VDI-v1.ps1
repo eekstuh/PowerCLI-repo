@@ -1320,7 +1320,7 @@ try {
             }
 
             $guestAdminCredential = Get-WindowsGuestCredential
-            Write-Host "`nGranting Remote Desktop access inside '$($selectedVM.Name)' through VMware Tools..." -ForegroundColor Cyan
+            Write-Host "`nGranting RDP Access inside '$($selectedVM.Name)' through VMware Tools..." -ForegroundColor Cyan
             $accountResult = Add-GuestRemoteDesktopUserWithCorrection -VM $selectedVM -Credential $guestAdminCredential -InitialAccountName $workItem.ADAccountName -ExpectedADUserSID $workItem.ADUserSID
             $guestResult = $accountResult.GuestResult
             if (-not [bool]$guestResult.Verified) {
