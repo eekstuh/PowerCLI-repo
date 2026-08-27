@@ -133,6 +133,38 @@ function Write-Banner {
     Write-Host "Enter 'exit' at any text prompt to cancel.`n" -ForegroundColor DarkGray
 }
 
+function Write-AlignedDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2,
+
+        [Parameter()]
+        [hashtable]$Colors
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        $line = '{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject]
+        if ($null -ne $Colors -and $Colors.ContainsKey($label)) {
+            Write-Host $line -ForegroundColor $Colors[$label]
+        }
+        else {
+            Write-Host $line
+        }
+    }
+}
+
 function Read-ExitAwareInput {
     [OutputType([string])]
     param(
@@ -516,8 +548,13 @@ function Resolve-InteractiveActiveDirectoryUser {
         try {
             $adUser = Resolve-ActiveDirectoryUser -AccountName $resolvedAccount -Context 'Active Directory account'
             $consultantLabel = if ($adUser.Consultant) { 'Yes' } else { 'No' }
-            Write-Host "Resolved Active Directory user: $($adUser.FullName) (source: $($adUser.FullNameSource)) [$($adUser.GuestAccountName)]" -ForegroundColor Green
-            Write-Host "Consultant: $consultantLabel ($($adUser.ConsultantOU))" -ForegroundColor Green
+            Write-AlignedDetails -Indent 0 -Details ([ordered]@{
+                    'Resolved Active Directory user' = "$($adUser.FullName) (source: $($adUser.FullNameSource)) [$($adUser.GuestAccountName)]"
+                    'Consultant'                     = "$consultantLabel ($($adUser.ConsultantOU))"
+                }) -Colors @{
+                    'Resolved Active Directory user' = 'Green'
+                    'Consultant'                     = 'Green'
+                }
             return $adUser
         }
         catch {
@@ -749,14 +786,24 @@ function Get-AssignmentCandidates {
             Sort-Object Number, Name
     )
 
-    Write-Host "`nLatest assigned virtual machine: $($latestAssigned.Name)" -ForegroundColor Green
-    Write-Host "Assignment cutoff number:       $($latestAssigned.Number)" -ForegroundColor Gray
+    $assignmentRangeDetails = [ordered]@{
+        'Latest assigned virtual machine' = $latestAssigned.Name
+        'Assignment cutoff number'         = $latestAssigned.Number
+    }
+    $assignmentRangeColors = @{
+        'Latest assigned virtual machine' = 'Green'
+        'Assignment cutoff number'         = 'Gray'
+    }
     if ($oldUnassigned.Count -gt 0) {
-        Write-Host "Ignored older unassigned VMs:   $($oldUnassigned.Count)" -ForegroundColor DarkGray
+        $assignmentRangeDetails['Ignored older unassigned VMs'] = $oldUnassigned.Count
+        $assignmentRangeColors['Ignored older unassigned VMs'] = 'DarkGray'
     }
     if ($poweredOffNewer.Count -gt 0) {
-        Write-Host "Ignored powered-off VMs:        $($poweredOffNewer.Count)" -ForegroundColor DarkGray
+        $assignmentRangeDetails['Ignored powered-off VMs'] = $poweredOffNewer.Count
+        $assignmentRangeColors['Ignored powered-off VMs'] = 'DarkGray'
     }
+    Write-Host ''
+    Write-AlignedDetails -Indent 0 -Details $assignmentRangeDetails -Colors $assignmentRangeColors
 
     return $candidates
 }
@@ -827,9 +874,11 @@ function Select-AssignmentVM {
         }
 
         Write-Host "`nProposed assignment:" -ForegroundColor Cyan
-        Write-Host "  Current VM name: $($vm.Name)"
-        Write-Host "  Assigned VM name: $targetName"
-        Write-Host "  AD account:       $ADAccount"
+        Write-AlignedDetails -Details ([ordered]@{
+                'Current VM name'  = $vm.Name
+                'Assigned VM name' = $targetName
+                'AD account'       = $ADAccount
+            })
         if (Read-YesNo -Prompt "Use virtual machine '$($vm.Name)' for this assignment?") {
             return [pscustomobject]@{
                 VM         = $vm
@@ -912,9 +961,11 @@ function Select-SpecificAssignmentVM {
         }
 
         Write-Host "`nProposed assignment:" -ForegroundColor Cyan
-        Write-Host "  Current VM name:  $($vm.Name)"
-        Write-Host "  Assigned VM name: $targetName"
-        Write-Host "  AD account:        $ADAccount"
+        Write-AlignedDetails -Details ([ordered]@{
+                'Current VM name'  = $vm.Name
+                'Assigned VM name' = $targetName
+                'AD account'       = $ADAccount
+            })
         if (Read-YesNo -Prompt "Use virtual machine '$($vm.Name)' for this assignment?") {
             return [pscustomobject]@{
                 VM         = $vm

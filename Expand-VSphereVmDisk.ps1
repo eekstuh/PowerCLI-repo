@@ -101,6 +101,38 @@ $vmNameWasSupplied = $PSBoundParameters.ContainsKey('VMName')
 $diskNumberWasSupplied = $PSBoundParameters.ContainsKey('DiskNumber')
 $sizeWasSupplied = $PSBoundParameters.ContainsKey('GBSizeToIncrease')
 
+function Write-AlignedDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2,
+
+        [Parameter()]
+        [hashtable]$Colors
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        $line = '{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject]
+        if ($null -ne $Colors -and $Colors.ContainsKey($label)) {
+            Write-Host $line -ForegroundColor $Colors[$label]
+        }
+        else {
+            Write-Host $line
+        }
+    }
+}
+
 function Read-ExitAwareInput {
     [OutputType([string])]
     param(
@@ -960,10 +992,12 @@ try {
     [decimal]$newCapacityGB = $currentCapacityGB + $additionalGB
 
     Write-Host "`nPlanned change:" -ForegroundColor Cyan
-    Write-Host "  VM:       $($vm.Name)"
-    Write-Host "  Disk:     $($disk.Name)"
-    Write-Host "  VMDK:     $($disk.Filename)"
-    Write-Host "  Capacity: $currentCapacityGB GB -> $newCapacityGB GB"
+    Write-AlignedDetails -Details ([ordered]@{
+            'VM'       = $vm.Name
+            'Disk'     = $disk.Name
+            'VMDK'     = $disk.Filename
+            'Capacity' = "$currentCapacityGB GB -> $newCapacityGB GB"
+        })
 
     while ($true) {
         $confirmation = Read-ExitAwareInput -Prompt "To confirm, enter YES to expand '$($disk.Name)' on '$($vm.Name)'"

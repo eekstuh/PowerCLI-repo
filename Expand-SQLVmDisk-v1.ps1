@@ -120,6 +120,38 @@ function Write-EnhancedUiBanner {
     Write-Host "Enter 'exit' at any text prompt to cancel.`n" -ForegroundColor DarkGray
 }
 
+function Write-AlignedDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2,
+
+        [Parameter()]
+        [hashtable]$Colors
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        $line = '{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject]
+        if ($null -ne $Colors -and $Colors.ContainsKey($label)) {
+            Write-Host $line -ForegroundColor $Colors[$label]
+        }
+        else {
+            Write-Host $line
+        }
+    }
+}
+
 function Write-EnhancedUiPhase {
     param(
         [Parameter(Mandatory)]
@@ -182,20 +214,23 @@ function Write-EnhancedUiSummary {
     }
 
     Write-EnhancedUiPhase -Progress $Progress -Title 'Operation summary'
-    Write-Host ("  VM:                 {0}" -f $SelectedVM)
+    $summaryDetails = [ordered]@{ 'VM' = $SelectedVM }
+    $summaryColors = @{}
     if (-not [string]::IsNullOrWhiteSpace($SelectedDisk)) {
-        Write-Host ("  Virtual disk:       {0}" -f $SelectedDisk)
+        $summaryDetails['Virtual disk'] = $SelectedDisk
     }
     if ($null -ne $OldCapacityGB -and $null -ne $NewCapacityGB) {
-        Write-Host ("  vSphere capacity:   {0} GB -> {1} GB" -f $OldCapacityGB, $NewCapacityGB)
+        $summaryDetails['vSphere capacity'] = "$OldCapacityGB GB -> $NewCapacityGB GB"
     }
     elseif ($GuestOnly) {
-        Write-Host '  vSphere capacity:   Skipped (GuestOnly mode)'
+        $summaryDetails['vSphere capacity'] = 'Skipped (GuestOnly mode)'
     }
-    Write-Host ("  Guest partition:    {0}" -f $(if ($script:GuestPartitionExtended) { 'Extended' } else { 'Not extended' }))
+    $summaryDetails['Guest partition'] = if ($script:GuestPartitionExtended) { 'Extended' } else { 'Not extended' }
     if ($script:GuestPartitionDeleted) {
-        Write-Host '  Blocking partition: Deleted with confirmation' -ForegroundColor Yellow
+        $summaryDetails['Blocking partition'] = 'Deleted with confirmation'
+        $summaryColors['Blocking partition'] = 'Yellow'
     }
+    Write-AlignedDetails -Details $summaryDetails -Colors $summaryColors
     Write-Host ('=' * 72) -ForegroundColor DarkCyan
 }
 
@@ -1295,10 +1330,12 @@ try {
     [decimal]$newCapacityGB = $currentCapacityGB + $additionalGB
 
     Write-Host "`nPlanned change:" -ForegroundColor Cyan
-    Write-Host "  VM:       $($vm.Name)"
-    Write-Host "  Disk:     $($disk.Name)"
-    Write-Host "  VMDK:     $($disk.Filename)"
-    Write-Host "  Capacity: $currentCapacityGB GB -> $newCapacityGB GB"
+    Write-AlignedDetails -Details ([ordered]@{
+            'VM'       = $vm.Name
+            'Disk'     = $disk.Name
+            'VMDK'     = $disk.Filename
+            'Capacity' = "$currentCapacityGB GB -> $newCapacityGB GB"
+        })
 
     while ($true) {
         $confirmation = Read-ExitAwareInput -Prompt "To confirm, enter YES to expand '$($disk.Name)' on '$($vm.Name)'"

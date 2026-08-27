@@ -190,6 +190,38 @@ function Write-Banner {
     Write-Host "Enter 'exit' at any text prompt to cancel.`n" -ForegroundColor DarkGray
 }
 
+function Write-AlignedDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2,
+
+        [Parameter()]
+        [hashtable]$Colors
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        $line = '{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject]
+        if ($null -ne $Colors -and $Colors.ContainsKey($label)) {
+            Write-Host $line -ForegroundColor $Colors[$label]
+        }
+        else {
+            Write-Host $line
+        }
+    }
+}
+
 function Read-ExitAwareInput {
     [OutputType([string])]
     param(
@@ -1057,14 +1089,19 @@ try {
     $vm = Select-ExactVM @vmArguments
     $currentCoresPerSocket = Get-VmCoresPerSocket -VM $vm
     Write-Host "Selected VM '$($vm.Name)'." -ForegroundColor Green
-    Write-Host "  Power state: $($vm.PowerState)"
-    Write-Host "  Current CPU: $($vm.NumCpu) vCPU(s)"
-    Write-Host "  Cores/socket: $currentCoresPerSocket"
-    Write-Host "  Current RAM: $($vm.MemoryGB) GB"
     $cpuHotAddEnabled = [bool]$vm.ExtensionData.Config.CpuHotAddEnabled
     $memoryHotAddEnabled = [bool]$vm.ExtensionData.Config.MemoryHotAddEnabled
-    Write-Host ("  CPU Hot Add:    {0}" -f $(if ($cpuHotAddEnabled) { 'Enabled' } else { 'Disabled' })) -ForegroundColor $(if ($cpuHotAddEnabled) { 'Green' } else { 'Yellow' })
-    Write-Host ("  Memory Hot Add: {0}" -f $(if ($memoryHotAddEnabled) { 'Enabled' } else { 'Disabled' })) -ForegroundColor $(if ($memoryHotAddEnabled) { 'Green' } else { 'Yellow' })
+    Write-AlignedDetails -Details ([ordered]@{
+            'Power state'    = $vm.PowerState
+            'Current CPU'    = "$($vm.NumCpu) vCPU(s)"
+            'Cores/socket'   = $currentCoresPerSocket
+            'Current RAM'    = "$($vm.MemoryGB) GB"
+            'CPU Hot Add'    = if ($cpuHotAddEnabled) { 'Enabled' } else { 'Disabled' }
+            'Memory Hot Add' = if ($memoryHotAddEnabled) { 'Enabled' } else { 'Disabled' }
+        }) -Colors @{
+            'CPU Hot Add'    = if ($cpuHotAddEnabled) { 'Green' } else { 'Yellow' }
+            'Memory Hot Add' = if ($memoryHotAddEnabled) { 'Green' } else { 'Yellow' }
+        }
     $null = Show-ExistingDisks -VM $vm -Server $server
 
     $selectedAction = Select-HardwareAction
@@ -1102,9 +1139,11 @@ try {
             }
 
             Write-Host "`nPlanned change:" -ForegroundColor Cyan
-            Write-Host "  VM:               $($vm.Name)"
-            Write-Host "  vCPU:             $($vm.NumCpu) -> $newCpuCount"
-            Write-Host "  Cores per socket: $currentCoresPerSocket -> $newCoresPerSocket"
+            Write-AlignedDetails -Details ([ordered]@{
+                    'VM'               = $vm.Name
+                    'vCPU'             = "$($vm.NumCpu) -> $newCpuCount"
+                    'Cores per socket' = "$currentCoresPerSocket -> $newCoresPerSocket"
+                })
             if (-not (Read-YesNo -Prompt 'Apply the proposed vCPU configuration?')) {
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
                 return
@@ -1177,9 +1216,11 @@ try {
             }
 
             Write-Host "`nPlanned change:" -ForegroundColor Cyan
-            Write-Host "  VM:        $($vm.Name)"
-            Write-Host "  Operation: $memoryChangeDescription"
-            Write-Host "  Memory:    $($vm.MemoryGB) GB -> $newMemoryGB GB"
+            Write-AlignedDetails -Details ([ordered]@{
+                    'VM'        = $vm.Name
+                    'Operation' = $memoryChangeDescription
+                    'Memory'    = "$($vm.MemoryGB) GB -> $newMemoryGB GB"
+                })
             if (-not (Read-YesNo -Prompt 'Apply the proposed memory configuration?')) {
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
                 return
@@ -1207,12 +1248,14 @@ try {
             $plannedPath = $plannedTarget.DatastorePath
 
             Write-Host "`nPlanned change:" -ForegroundColor Cyan
-            Write-Host "  VM:             $($vm.Name)"
-            Write-Host "  Disk capacity:  $capacity GB"
-            Write-Host "  Storage format: $StorageFormat"
-            Write-Host "  Datastore:      $($targetDatastore.Name)"
-            Write-Host "  Backing file:   $plannedPath" -ForegroundColor Green
-            Write-Host "  Controller:     $($selectedController.Controller) (next available address: $($selectedController.BusNumber):$($selectedController.FreeUnitNumbers[0]))"
+            Write-AlignedDetails -Details ([ordered]@{
+                    'VM'             = $vm.Name
+                    'Disk capacity'  = "$capacity GB"
+                    'Storage format' = $StorageFormat
+                    'Datastore'      = $targetDatastore.Name
+                    'Backing file'   = $plannedPath
+                    'Controller'     = "$($selectedController.Controller) (next available address: $($selectedController.BusNumber):$($selectedController.FreeUnitNumbers[0]))"
+                }) -Colors @{ 'Backing file' = 'Green' }
             if ([decimal]$targetDatastore.FreeSpaceGB -lt $capacity) {
                 Write-Warning "The datastore reports only $([math]::Round([decimal]$targetDatastore.FreeSpaceGB, 2)) GB free. Thin provisioning may overcommit storage; Thick formats may fail."
             }
@@ -1223,8 +1266,10 @@ try {
 
             $result = Add-UniqueVirtualDisk -VM $vm -Server $server -Datastore $targetDatastore -CapacityGB $capacity -Format $StorageFormat -ExpectedDatastorePath $plannedPath -ControllerKey $selectedController.ControllerKey
             Write-Host "Successfully added '$($result.HardDisk.Name)' to '$($vm.Name)'." -ForegroundColor Green
-            Write-Host "  Backing file: $($result.DatastorePath)"
-            Write-Host "  Controller:   $($result.Controller)"
+            Write-AlignedDetails -Details ([ordered]@{
+                    'Backing file' = $result.DatastorePath
+                    'Controller'   = $result.Controller
+                })
             Write-Host 'The disk is not initialized or formatted inside the guest OS.' -ForegroundColor Yellow
         }
     }

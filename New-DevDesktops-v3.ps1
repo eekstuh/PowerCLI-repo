@@ -29,6 +29,38 @@ param(
 # FUNCTIONS
 # ------------------------------------------------------------
 
+function Write-AlignedDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2,
+
+        [Parameter()]
+        [hashtable]$Colors
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        $line = '{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject]
+        if ($null -ne $Colors -and $Colors.ContainsKey($label)) {
+            Write-Host $line -ForegroundColor $Colors[$label]
+        }
+        else {
+            Write-Host $line
+        }
+    }
+}
+
 function Connect-VCenterIfNeeded {
 
     $connectionCandidates = @($global:DefaultVIServers) + @($global:DefaultVIServer)
@@ -310,12 +342,14 @@ Write-Host "The script will create $($vmNames.Count) VM(s):" -ForegroundColor Cy
 $vmNames | ForEach-Object { Write-Host "  $_" }
 
 Write-Host ''
-Write-Host "Template:          $TemplateName"
-Write-Host "Cluster:           $ClusterName"
-Write-Host "Datastore cluster: $DatastoreClusterName"
-Write-Host "Datacenter:        $DatacenterName"
-Write-Host "VM folder:         $FolderName"
-Write-Host "Power on:          $PowerOnAfterCreate"
+Write-AlignedDetails -Indent 0 -Details ([ordered]@{
+        'Template'          = $TemplateName
+        'Cluster'           = $ClusterName
+        'Datastore cluster' = $DatastoreClusterName
+        'Datacenter'        = $DatacenterName
+        'VM folder'         = $FolderName
+        'Power on'          = $PowerOnAfterCreate
+    })
 
 $confirmation = (Read-Host 'Create the listed virtual machines? [yes/no]').Trim()
 if ($confirmation -notmatch '^(?i:y|yes)$') {
