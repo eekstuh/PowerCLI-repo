@@ -128,7 +128,6 @@ function Write-Banner {
     $line = '=' * 76
     Write-Host "`n$line" -ForegroundColor DarkCyan
     Write-Host '  VDI Assignment Assistant - Version 1' -ForegroundColor Cyan
-    Write-Host '  Select VDI | Grant Remote Desktop access | Rename in vSphere' -ForegroundColor Gray
     Write-Host $line -ForegroundColor DarkCyan
     Write-Host "Enter 'exit' at any text prompt to cancel.`n" -ForegroundColor DarkGray
 }
@@ -295,7 +294,7 @@ function Read-NamingConvention {
     }
 
     while ($true) {
-        Write-Host "`nSelect a virtual machine naming convention:" -ForegroundColor Cyan
+        Write-Host "`nSelect a VDI naming convention:" -ForegroundColor Cyan
         Write-Host '  1. 11VMGC'
         Write-Host '  2. 11VMDEV'
         Write-Host '  3. 11VMSAS'
