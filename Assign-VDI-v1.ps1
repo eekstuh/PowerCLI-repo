@@ -884,12 +884,6 @@ function Select-AssignmentVM {
         throw 'No powered-on, unassigned virtual machines were found above the latest assigned number.'
     }
 
-    Write-Host "`nPowered-on assignment candidates:" -ForegroundColor Cyan
-    $Candidates |
-        Select-Object @{ Name = 'VMName'; Expression = { $_.Name } }, Number, PowerState |
-        Format-Table -AutoSize |
-        Out-Host
-
     foreach ($candidate in $Candidates) {
         $vm = Get-RefreshedCandidate -Candidate $candidate -Server $Server
         if ($null -eq $vm) {
