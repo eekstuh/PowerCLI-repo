@@ -805,7 +805,6 @@ function Get-AssignmentCandidates {
 
     $latestAssigned = $assigned | Sort-Object Number -Descending | Select-Object -First 1
     $oldUnassigned = @($Inventory | Where-Object { -not $_.IsAssigned -and $_.Number -le $latestAssigned.Number })
-    $poweredOffNewer = @($Inventory | Where-Object { -not $_.IsAssigned -and $_.Number -gt $latestAssigned.Number -and $_.PowerState -ne 'PoweredOn' })
     $candidates = @(
         $Inventory |
             Where-Object {
@@ -818,19 +817,13 @@ function Get-AssignmentCandidates {
 
     $assignmentRangeDetails = [ordered]@{
         'Latest assigned virtual machine' = $latestAssigned.Name
-        'Assignment cutoff number'         = $latestAssigned.Number
     }
     $assignmentRangeColors = @{
         'Latest assigned virtual machine' = 'Green'
-        'Assignment cutoff number'         = 'Gray'
     }
     if ($oldUnassigned.Count -gt 0) {
         $assignmentRangeDetails['Ignored older unassigned VMs'] = $oldUnassigned.Count
         $assignmentRangeColors['Ignored older unassigned VMs'] = 'DarkGray'
-    }
-    if ($poweredOffNewer.Count -gt 0) {
-        $assignmentRangeDetails['Ignored powered-off VMs'] = $poweredOffNewer.Count
-        $assignmentRangeColors['Ignored powered-off VMs'] = 'DarkGray'
     }
     Write-Host ''
     Write-AlignedDetails -Indent 0 -Details $assignmentRangeDetails -Colors $assignmentRangeColors
