@@ -219,13 +219,13 @@ function Read-YesNo {
     )
 
     while ($true) {
-        $answer = Read-ExitAwareInput -Prompt "$Prompt [yes/no]"
+        $answer = Read-ExitAwareInput -Prompt "$Prompt [Y/N]"
         Stop-IfExitRequested
 
         switch -Regex ($answer) {
             '^(?i:y|yes)$' { return $true }
             '^(?i:n|no)$'  { return $false }
-            default { Write-Warning "Enter yes, no, or 'exit'." }
+            default { Write-Warning "Enter Y, N, or 'exit'." }
         }
     }
 }
