@@ -565,7 +565,7 @@ function Resolve-InteractiveActiveDirectoryUser {
     $accountWasSupplied = $adAccountWasSupplied
 
     while ($true) {
-        $resolvedAccount = Resolve-RequiredText -InitialValue $candidateAccount -WasSupplied $accountWasSupplied -Prompt "Enter the user's Active Directory account name" -FieldName 'Active Directory account name'
+        $resolvedAccount = Resolve-RequiredText -InitialValue $candidateAccount -WasSupplied $accountWasSupplied -Prompt "Enter the user's SamAccountName" -FieldName 'Active Directory account name'
         try {
             $adUser = Resolve-ActiveDirectoryUser -AccountName $resolvedAccount -Context 'Active Directory account'
             $consultantLabel = if ($adUser.Consultant) { 'Yes' } else { 'No' }
