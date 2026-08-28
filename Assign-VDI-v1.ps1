@@ -142,7 +142,7 @@ $adAccountWasSupplied = $PSBoundParameters.ContainsKey('ADAccountName')
 function Write-Banner {
     $line = '=' * 76
     Write-Host "`n$line" -ForegroundColor DarkCyan
-    Write-Host '  VDI Assignment Assistant - Version 1' -ForegroundColor Cyan
+    Write-Host '  VDI Assignment Assistant - Version 1.0' -ForegroundColor Cyan
     Write-Host $line -ForegroundColor DarkCyan
     Write-Host "Enter 'exit' at any text prompt to cancel.`n" -ForegroundColor DarkGray
 }
@@ -316,7 +316,7 @@ function Read-NamingConvention {
         Write-Host '  1. 11VMGC'
         Write-Host '  2. 11VMDEV'
         Write-Host '  3. 11VMSAS'
-        Write-Host '  4. Specific VM name'
+        Write-Host '  4. Specify VM name'
         Write-Host '  5. Add a user to an assigned VDI (no rename)'
 
         $selection = Read-ExitAwareInput -Prompt 'Select an option (1, 2, 3, 4, or 5)'
