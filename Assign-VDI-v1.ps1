@@ -225,7 +225,10 @@ function Read-YesNo {
         switch -Regex ($answer) {
             '^(?i:y|yes)$' { return $true }
             '^(?i:n|no)$'  { return $false }
-            default { Write-Warning "Enter Y, N, or 'exit'." }
+            default {
+                Write-Warning "Enter Y, N, or 'exit'."
+                Write-Host ''
+            }
         }
     }
 }
@@ -253,12 +256,14 @@ function Get-VCenterConnection {
         if ($connections.Count -gt 1) {
             Write-Host 'More than one active vCenter Server connection is available:' -ForegroundColor Yellow
             $connections | ForEach-Object { Write-Host "  $($_.Name)" }
+            Write-Host ''
         }
 
         $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
         Stop-IfExitRequested
         if ([string]::IsNullOrWhiteSpace($serverName)) {
             Write-Warning 'A vCenter Server host name or IP address is required.'
+            Write-Host ''
         }
     }
 
@@ -378,10 +383,12 @@ function Resolve-RequiredText {
         $value = [regex]::Replace(([string]$value).Trim(), '\s+', ' ')
         if ([string]::IsNullOrWhiteSpace($value)) {
             Write-Warning "$FieldName cannot be blank."
+            Write-Host ''
             continue
         }
         if ($RejectAssignmentDelimiter -and $value -match '\s+-\s+') {
             Write-Warning "$FieldName cannot contain the assignment delimiter ' - '."
+            Write-Host ''
             continue
         }
         return $value
@@ -571,7 +578,9 @@ function Resolve-InteractiveActiveDirectoryUser {
         try {
             $adUser = Resolve-ActiveDirectoryUser -AccountName $resolvedAccount -Context 'Active Directory account'
             $consultantLabel = if ($adUser.Consultant) { 'Yes' } else { 'No' }
-            Write-Host ''
+            if (-not $accountWasSupplied) {
+                Write-Host ''
+            }
             Write-AlignedDetails -Indent 0 -Details ([ordered]@{
                     'Resolved Active Directory user' = "$($adUser.FullName) [$($adUser.GuestAccountName)]"
                     'Consultant'                     = $consultantLabel
@@ -583,6 +592,7 @@ function Resolve-InteractiveActiveDirectoryUser {
         }
         catch {
             Write-Warning $_.Exception.Message
+            Write-Host ''
             $candidateAccount = ''
             $accountWasSupplied = $false
         }
@@ -592,6 +602,7 @@ function Resolve-InteractiveActiveDirectoryUser {
 function Get-AssignmentWorkItems {
     if ($script:InvocationParameterSet -eq 'Interactive') {
         $selectedPrefix = Read-NamingConvention
+        Write-Host ''
         $requestedVMName = if ($selectedPrefix -eq 'SPECIFIC') {
             Resolve-RequiredText -InitialValue $VMName -WasSupplied $vmNameWasSupplied -Prompt 'Enter the exact unassigned VM name' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
         }
@@ -603,6 +614,9 @@ function Get-AssignmentWorkItems {
                 throw 'VMName can be used only when NamingConvention is SPECIFIC, CUSTOM, EXISTING, or ASSIGNED.'
             }
             ''
+        }
+        if ($selectedPrefix -in @('SPECIFIC', 'EXISTING') -and -not $vmNameWasSupplied) {
+            Write-Host ''
         }
         $resolvedADUser = Resolve-InteractiveActiveDirectoryUser
 
@@ -780,6 +794,7 @@ function Confirm-DuplicateUserAssignment {
 
     $names = @($matches.Name | Sort-Object)
     Write-Warning "A virtual machine assignment for '$FullName' already exists in the cluster: $($names -join ', ')"
+    Write-Host ''
     $confirmed = Read-YesNo -Prompt "Are you sure you want to assign another VDI to '$FullName'?"
     if ($confirmed) {
         Write-Host "Duplicate VDI assignment authorized for '$FullName'." -ForegroundColor Yellow
@@ -956,6 +971,7 @@ function Select-SpecificAssignmentVM {
                 throw $validationMessage
             }
             Write-Warning $validationMessage
+            Write-Host ''
             $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact VM name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
             continue
         }
@@ -965,6 +981,7 @@ function Select-SpecificAssignmentVM {
             if (-not $AllowNameCorrection) {
                 throw "Virtual machine '$requestedName' does not currently meet the assignment requirements."
             }
+            Write-Host ''
             $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact VM name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
             continue
         }
@@ -977,6 +994,7 @@ function Select-SpecificAssignmentVM {
                 throw $validationMessage
             }
             Write-Warning $validationMessage
+            Write-Host ''
             $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact VM name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
             continue
         }
@@ -999,6 +1017,7 @@ function Select-SpecificAssignmentVM {
             return $null
         }
         Write-Host "Skipped '$($vm.Name)'." -ForegroundColor Yellow
+        Write-Host ''
         $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact VM name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
     }
 }
@@ -1043,6 +1062,7 @@ function Select-ExistingAssignmentVM {
                 throw $validationMessage
             }
             Write-Warning $validationMessage
+            Write-Host ''
             $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact assigned VDI name' -FieldName 'Virtual machine name'
             continue
         }
@@ -1052,6 +1072,7 @@ function Select-ExistingAssignmentVM {
             if (-not $AllowNameCorrection) {
                 throw "Virtual machine '$requestedName' does not currently meet the access-assignment requirements."
             }
+            Write-Host ''
             $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact assigned VDI name' -FieldName 'Virtual machine name'
             continue
         }
@@ -1062,6 +1083,7 @@ function Select-ExistingAssignmentVM {
                 throw $validationMessage
             }
             Write-Warning $validationMessage
+            Write-Host ''
             $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact assigned VDI name' -FieldName 'Virtual machine name'
             continue
         }
@@ -1072,6 +1094,7 @@ function Select-ExistingAssignmentVM {
                 'New AD account'    = $ADAccount
                 'vSphere rename'    = 'No - the existing name will be preserved'
             })
+        Write-Host ''
         if (Read-YesNo -Prompt "Grant '$ADAccount' RDP access to assigned VDI '$($vm.Name)'?") {
             return [pscustomobject]@{
                 VM         = $vm
@@ -1083,6 +1106,7 @@ function Select-ExistingAssignmentVM {
             return $null
         }
         Write-Host "Skipped '$($vm.Name)'." -ForegroundColor Yellow
+        Write-Host ''
         $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact assigned VDI name' -FieldName 'Virtual machine name'
     }
 }
@@ -1097,6 +1121,7 @@ function Get-WindowsGuestCredential {
         return $script:ResolvedGuestCredential
     }
 
+    Write-Host ''
     $guestUserName = Read-ExitAwareInput -Prompt 'Enter your Windows Desktop Administrator credentials to proceed'
     Stop-IfExitRequested
     $credential = Get-Credential -UserName $guestUserName -Message 'Enter the Windows guest administrator password used by VMware Tools guest operations.'
@@ -1466,6 +1491,7 @@ try {
                 Write-Host "'$($guestResult.Account)' was already a member of local group '$($guestResult.Group)'." -ForegroundColor Green
             }
             Write-Host "Verified '$($guestResult.Account)' as a member of '$($guestResult.Group)'." -ForegroundColor Green
+            Write-Host ''
 
             if ($renameRequired) {
                 Write-Host "Renaming '$($selectedVM.Name)' to '$targetVMName' in vSphere..." -ForegroundColor Cyan
@@ -1489,6 +1515,7 @@ try {
                     }
                     throw "The vSphere rename failed: $renameError"
                 }
+                Write-Host ''
             }
 
             $script:CompletedAssignments++
