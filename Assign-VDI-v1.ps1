@@ -1510,6 +1510,7 @@ try {
         }
 
         if ($script:InvocationParameterSet -eq 'Interactive') {
+            Write-Host ''
             $continueAssignmentSession = Read-YesNo -Prompt 'Would you like to assign another VDI to a user account?'
             if ($continueAssignmentSession) {
                 $namingConventionWasSupplied = $false
