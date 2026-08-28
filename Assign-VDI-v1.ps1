@@ -592,7 +592,7 @@ function Get-AssignmentWorkItems {
     if ($script:InvocationParameterSet -eq 'Interactive') {
         $selectedPrefix = Read-NamingConvention
         $requestedVMName = if ($selectedPrefix -eq 'SPECIFIC') {
-            Resolve-RequiredText -InitialValue $VMName -WasSupplied $vmNameWasSupplied -Prompt 'Enter the exact unassigned virtual machine name' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
+            Resolve-RequiredText -InitialValue $VMName -WasSupplied $vmNameWasSupplied -Prompt 'Enter the exact unassigned VM name' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
         }
         elseif ($selectedPrefix -eq 'EXISTING') {
             Resolve-RequiredText -InitialValue $VMName -WasSupplied $vmNameWasSupplied -Prompt 'Enter the exact name of the assigned VDI' -FieldName 'Virtual machine name'
@@ -899,7 +899,7 @@ function Select-AssignmentVM {
                 'AD account'       = $ADAccount
             })
         Write-Host ''
-        if (Read-YesNo -Prompt "Use virtual machine '$($vm.Name)' for this assignment?") {
+        if (Read-YesNo -Prompt "Use VM '$($vm.Name)' for this assignment?") {
             return [pscustomobject]@{
                 VM         = $vm
                 TargetName = $targetName
@@ -955,7 +955,7 @@ function Select-SpecificAssignmentVM {
                 throw $validationMessage
             }
             Write-Warning $validationMessage
-            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact virtual machine name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
+            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact VM name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
             continue
         }
 
@@ -964,7 +964,7 @@ function Select-SpecificAssignmentVM {
             if (-not $AllowNameCorrection) {
                 throw "Virtual machine '$requestedName' does not currently meet the assignment requirements."
             }
-            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact virtual machine name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
+            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact VM name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
             continue
         }
 
@@ -976,7 +976,7 @@ function Select-SpecificAssignmentVM {
                 throw $validationMessage
             }
             Write-Warning $validationMessage
-            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact virtual machine name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
+            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact VM name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
             continue
         }
 
@@ -987,7 +987,7 @@ function Select-SpecificAssignmentVM {
                 'AD account'       = $ADAccount
             })
         Write-Host ''
-        if (Read-YesNo -Prompt "Use virtual machine '$($vm.Name)' for this assignment?") {
+        if (Read-YesNo -Prompt "Use VM '$($vm.Name)' for this assignment?") {
             return [pscustomobject]@{
                 VM         = $vm
                 TargetName = $targetName
@@ -998,7 +998,7 @@ function Select-SpecificAssignmentVM {
             return $null
         }
         Write-Host "Skipped '$($vm.Name)'." -ForegroundColor Yellow
-        $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact virtual machine name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
+        $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact VM name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
     }
 }
 
