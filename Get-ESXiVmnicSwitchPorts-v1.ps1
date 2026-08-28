@@ -150,6 +150,7 @@ function Get-VCenterConnection {
             Write-Host 'More than one active vCenter connection was found:' -ForegroundColor Yellow
             $existingConnections | ForEach-Object { Write-Host "  $($_.Name)" }
         }
+        Write-Host ''
         $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
         Stop-IfExitRequested
         if ([string]::IsNullOrWhiteSpace($serverName)) {
@@ -439,6 +440,7 @@ try {
             Format-Table -AutoSize -Wrap |
             Out-Host
     }
+    Write-Host ''
 
     if (-not [string]::IsNullOrWhiteSpace($CsvPath)) {
         $resolvedCsvPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($CsvPath)
@@ -448,6 +450,7 @@ try {
         }
         $report | Export-Csv -LiteralPath $resolvedCsvPath -NoTypeInformation -Encoding UTF8
         Write-Host "Report exported to '$resolvedCsvPath'." -ForegroundColor Green
+        Write-Host ''
     }
 
     $missingNeighborCount = @($report | Where-Object { $_.Protocol -eq 'None' }).Count

@@ -180,6 +180,7 @@ function Get-VCenterConnection {
         Stop-IfExitRequested
         if ([string]::IsNullOrWhiteSpace($serverName)) {
             Write-Warning 'A vCenter Server host name or IP address is required.'
+            Write-Host ''
         }
     }
 
@@ -217,6 +218,7 @@ function Read-TargetCapacityGB {
             return $number
         }
         Write-Warning 'Enter a number greater than zero.'
+        Write-Host ''
     }
 }
 
@@ -255,10 +257,14 @@ function Get-WorkItems {
         $value = Read-ExitAwareInput -Prompt 'Enter virtual machine names or wildcard patterns, separated by commas'
         Stop-IfExitRequested
         $names = @($value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        if ($names.Count -eq 0) { Write-Warning 'Enter at least one VM name.' }
+        if ($names.Count -eq 0) {
+            Write-Warning 'Enter at least one VM name.'
+            Write-Host ''
+        }
     }
     $selectedDrive = $DriveLetter
     while ([string]::IsNullOrWhiteSpace($selectedDrive)) {
+        Write-Host ''
         $selectedDrive = Read-ExitAwareInput -Prompt 'Enter the Windows drive letter to extend (for example, D)'
         Stop-IfExitRequested
         try {
@@ -273,6 +279,7 @@ function Get-WorkItems {
 
     $target = $TargetCapacityGB
     if (-not $targetCapacityWasSupplied) {
+        Write-Host ''
         $target = Read-TargetCapacityGB
     }
 
@@ -616,6 +623,7 @@ function New-Result {
 try {
     Write-Host "`nMulti-VM Windows Disk Expansion - Version 1" -ForegroundColor Cyan
     Write-Host ('=' * 72) -ForegroundColor DarkCyan
+    Write-Host ''
     if ($AllowRecoveryPartitionDeletion) {
         Write-Warning 'Recovery partition deletion is enabled for this run. WinRE will be disabled and the Recovery partition will not be recreated.'
     }
@@ -672,6 +680,7 @@ try {
                 TargetCapacityGB |
             Format-Table -AutoSize |
             Out-Host
+        Write-Host ''
         Write-Host 'These VMs will now enter preflight. No per-VM approval will be requested.' -ForegroundColor DarkGray
     }
     else {
@@ -819,6 +828,7 @@ try {
     $results | Format-Table VMName, DriveLetter, TargetCapacityGB, HardDisk, VmdkBeforeGB, VmdkAfterGB, PartitionBeforeGB, PartitionAfterGB, RecoveryDeleted, Outcome, Message -AutoSize -Wrap | Out-Host
 
     if (-not [string]::IsNullOrWhiteSpace($CsvReportPath)) {
+        Write-Host ''
         $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($CsvReportPath)
         $folder = Split-Path -Parent $resolvedPath
         if (-not [string]::IsNullOrWhiteSpace($folder) -and -not (Test-Path -LiteralPath $folder -PathType Container)) {

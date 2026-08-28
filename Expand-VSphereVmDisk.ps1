@@ -306,6 +306,7 @@ function Select-HardDisk {
         }
     }
     $diskList | Format-Table -AutoSize | Out-Host
+    Write-Host ''
 
     if ($PSBoundParameters.ContainsKey('InitialDiskNumber')) {
         if ($InitialDiskNumber -gt $disks.Count) {
@@ -322,6 +323,7 @@ function Select-HardDisk {
         [int]$diskNumber = 0
         if (-not [int]::TryParse($choice, [ref]$diskNumber) -or $diskNumber -lt 1 -or $diskNumber -gt $disks.Count) {
             Write-Warning "Enter a number from 1 to $($disks.Count)."
+            Write-Host ''
             continue
         }
 
@@ -339,6 +341,7 @@ function Read-AdditionalCapacityGB {
         return $InitialAdditionalGB
     }
 
+    Write-Host ''
     while ($true) {
         $inputValue = Read-ExitAwareInput -Prompt 'Enter the capacity to add, in GB'
         Stop-IfExitRequested
@@ -351,6 +354,7 @@ function Read-AdditionalCapacityGB {
                 [ref]$additionalGB
             ) -or $additionalGB -le 0) {
             Write-Warning 'Enter a positive number of GB, for example 50 or 25.5.'
+            Write-Host ''
             continue
         }
 
@@ -371,7 +375,10 @@ function Read-YesNo {
         switch -Regex ($answer) {
             '^(?i:y|yes)$' { return $true }
             '^(?i:n|no)$'  { return $false }
-            default { Write-Warning "Enter yes, no, or 'exit'." }
+            default {
+                Write-Warning "Enter yes, no, or 'exit'."
+                Write-Host ''
+            }
         }
     }
 }
@@ -381,12 +388,14 @@ function Get-WindowsGuestCredential {
         return $GuestCredential
     }
 
+    Write-Host ''
     $userName = Read-ExitAwareInput -Prompt 'Enter the Windows guest administrator user name'
     Stop-IfExitRequested
 
     try {
         $credential = Get-Credential -UserName $userName -Message "Enter the password for Windows guest account '$userName'. Select Cancel to stop the guest partition workflow."
         if ($null -eq $credential) {
+            Write-Host ''
             Write-Warning 'Guest partition extension was cancelled. No guest partition was changed.'
         }
         return $credential
@@ -521,6 +530,7 @@ function Select-WindowsGuestPartition {
             IsRecovery |
         Format-Table -AutoSize |
         Out-Host
+    Write-Host ''
 
     while ($true) {
         $diskInput = Read-ExitAwareInput -Prompt 'Select the Windows disk corresponding to the expanded virtual disk by entering its disk number'
@@ -529,15 +539,18 @@ function Select-WindowsGuestPartition {
         [int]$guestDiskNumber = 0
         if (-not [int]::TryParse($diskInput, [ref]$guestDiskNumber) -or -not ($Partitions.DiskNumber -contains $guestDiskNumber)) {
             Write-Warning 'Enter a disk number shown in the list.'
+            Write-Host ''
             continue
         }
 
+        Write-Host ''
         $partitionInput = Read-ExitAwareInput -Prompt "Select the partition to extend on Windows disk $guestDiskNumber by entering its partition number"
         Stop-IfExitRequested
 
         [int]$guestPartitionNumber = 0
         if (-not [int]::TryParse($partitionInput, [ref]$guestPartitionNumber)) {
             Write-Warning 'Enter a partition number shown for that disk.'
+            Write-Host ''
             continue
         }
 
@@ -547,11 +560,13 @@ function Select-WindowsGuestPartition {
 
         if ($selectedPartition.Count -ne 1) {
             Write-Warning 'Enter a partition number shown for that disk.'
+            Write-Host ''
             continue
         }
 
         if ([bool]$selectedPartition[0].IsRecovery -or $selectedPartition[0].Type -in @('System', 'Reserved')) {
             Write-Warning 'Recovery, system, and reserved partitions cannot be selected for extension.'
+            Write-Host ''
             continue
         }
 
@@ -653,11 +668,14 @@ function Confirm-WindowsRecoveryPartitionDeletion {
 
     Write-Warning "A $($RecoveryPartition.SizeGB) GB Windows Recovery partition (partition $($RecoveryPartition.PartitionNumber)) immediately follows the selected partition."
     Write-Warning 'Deleting it is permanent and disables Windows Recovery Environment (WinRE). The script will not recreate the Recovery partition or re-enable WinRE.'
+    Write-Host ''
 
     if (-not (Read-YesNo -Prompt 'Do you authorize permanent deletion of this Windows Recovery partition?')) {
+        Write-Host ''
         Write-Host 'The Recovery partition and Windows partition were not changed.' -ForegroundColor Yellow
         return $false
     }
+    Write-Host ''
 
     while ($true) {
         $confirmation = Read-ExitAwareInput -Prompt "To confirm permanent deletion, enter DELETE RECOVERY for Windows Recovery partition $($RecoveryPartition.PartitionNumber)"
@@ -668,6 +686,7 @@ function Confirm-WindowsRecoveryPartitionDeletion {
         }
 
         Write-Warning "The Recovery partition was not confirmed for deletion. Type DELETE RECOVERY, or 'exit' to stop."
+        Write-Host ''
     }
 }
 
@@ -683,11 +702,14 @@ function Confirm-WindowsBlockingPartitionDeletion {
 
     Write-Warning "Partition $($BlockingPartition.PartitionNumber) ($($BlockingPartition.Type), $($BlockingPartition.SizeGB) GB) immediately follows the selected partition and blocks extension."
     Write-Warning 'Deleting it is permanent and removes all data on that partition.'
+    Write-Host ''
 
     if (-not (Read-YesNo -Prompt 'Do you authorize permanent deletion of this blocking partition?')) {
+        Write-Host ''
         Write-Host 'The blocking partition and Windows partition were not changed.' -ForegroundColor Yellow
         return $false
     }
+    Write-Host ''
 
     while ($true) {
         $confirmation = Read-ExitAwareInput -Prompt "To confirm permanent deletion, enter DELETE PARTITION for partition $($BlockingPartition.PartitionNumber)"
@@ -698,6 +720,7 @@ function Confirm-WindowsBlockingPartitionDeletion {
         }
 
         Write-Warning "The partition was not confirmed for deletion. Type DELETE PARTITION, or 'exit' to stop."
+        Write-Host ''
     }
 }
 
@@ -907,7 +930,9 @@ function Invoke-WindowsGuestPartitionExtension {
     }
 
     $partitions = Get-WindowsGuestPartitions -VM $VM -Credential $credential
+    Write-Host ''
     if (-not (Read-YesNo -Prompt 'Proceed to select a Windows partition for extension?')) {
+        Write-Host ''
         Write-Host 'No guest partition was changed.' -ForegroundColor Yellow
         return
     }
@@ -943,6 +968,7 @@ function Invoke-WindowsGuestPartitionExtension {
         }
 
         Write-Host "Verified: after deleting the blocking partition, Windows disk $($partition.DiskNumber), partition $($partition.PartitionNumber) can now grow from $($extensionState.CurrentSizeGB) GB to $($extensionState.MaximumSizeGB) GB." -ForegroundColor Green
+        Write-Host ''
     }
 
     if (-not [bool]$extensionState.CanExtend) {
@@ -951,10 +977,13 @@ function Invoke-WindowsGuestPartitionExtension {
     }
 
     Write-Host "The selected Windows partition can grow from $($extensionState.CurrentSizeGB) GB to $($extensionState.MaximumSizeGB) GB." -ForegroundColor Cyan
+    Write-Host ''
     if (-not (Read-YesNo -Prompt 'Extend the selected Windows partition now?')) {
+        Write-Host ''
         Write-Host 'No guest partition was changed.' -ForegroundColor Yellow
         return
     }
+    Write-Host ''
 
     $result = Expand-WindowsGuestPartition -VM $VM -Credential $credential -Partition $partition
     Write-Host "Successfully extended Windows disk $($partition.DiskNumber), partition $($partition.PartitionNumber) to $($result.NewSizeGB) GB." -ForegroundColor Green
@@ -998,6 +1027,7 @@ try {
             'VMDK'     = $disk.Filename
             'Capacity' = "$currentCapacityGB GB -> $newCapacityGB GB"
         })
+    Write-Host ''
 
     while ($true) {
         $confirmation = Read-ExitAwareInput -Prompt "To confirm, enter YES to expand '$($disk.Name)' on '$($vm.Name)'"
@@ -1008,17 +1038,21 @@ try {
         }
 
         Write-Warning "The change has not been confirmed. Enter YES to proceed, or 'exit' to cancel."
+        Write-Host ''
     }
+    Write-Host ''
 
     Set-HardDisk -HardDisk $disk -CapacityGB $newCapacityGB -Confirm:$false -ErrorAction Stop | Out-Null
     $script:VmdkExpanded = $true
 
     Write-Host "`nSuccessfully expanded '$($disk.Name)' on '$($vm.Name)' by $additionalGB GB." -ForegroundColor Green
+    Write-Host ''
 
     if (Read-YesNo -Prompt 'Would you like to review and extend a Windows guest partition?') {
         Invoke-WindowsGuestPartitionExtension -VM $vm
     }
     else {
+        Write-Host ''
         Write-Host 'The Windows partition/volume was not extended.' -ForegroundColor Yellow
     }
 }

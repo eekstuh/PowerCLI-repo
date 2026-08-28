@@ -77,16 +77,19 @@ function Connect-VCenterIfNeeded {
     }
 
     Write-Warning 'No active vCenter connection was found.'
+    Write-Host ''
     while ($true) {
         $serverName = (Read-Host 'Enter the vCenter Server host name or IP address').Trim()
         if ([string]::IsNullOrWhiteSpace($serverName)) {
             Write-Warning 'The vCenter Server host name or IP address cannot be blank.'
+            Write-Host ''
             continue
         }
 
         $credential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
         if ($null -eq $credential) {
             Write-Warning 'The credential prompt was cancelled. Enter the vCenter Server host name or IP address to try again.'
+            Write-Host ''
             continue
         }
 
@@ -97,6 +100,7 @@ function Connect-VCenterIfNeeded {
         }
         catch {
             Write-Warning "Could not connect to vCenter Server '$serverName': $($_.Exception.Message)"
+            Write-Host ''
         }
     }
 }
@@ -172,10 +176,12 @@ function Read-VmNamePrefix {
     while ($true) {
         Write-Host ''
         Write-Host 'Select a virtual machine naming convention:' -ForegroundColor Cyan
+        Write-Host ''
         Write-Host '  1. 11VMGC'
         Write-Host '  2. 11VMDEV'
         Write-Host '  3. 11VMSAS'
         Write-Host '  4. Custom VM name'
+        Write-Host ''
 
         $selection = (Read-Host 'Select an option (1, 2, 3, or 4)').Trim().ToUpperInvariant()
 
@@ -184,6 +190,7 @@ function Read-VmNamePrefix {
         }
 
         Write-Warning 'Invalid selection. Enter 1, 2, 3, or 4.'
+        Write-Host ''
     }
 }
 
@@ -194,11 +201,13 @@ function Read-CustomVmName {
 
         if ([string]::IsNullOrWhiteSpace($name)) {
             Write-Warning 'The custom VM name cannot be blank.'
+            Write-Host ''
             continue
         }
 
         if ($name.IndexOfAny([char[]]'*?[]') -ge 0) {
             Write-Warning 'Wildcard characters (*, ?, [, and ]) are not allowed in a custom VM name.'
+            Write-Host ''
             continue
         }
 
@@ -219,6 +228,7 @@ function Read-VmCount {
         }
 
         Write-Warning "Enter a whole number from 1 through $maximumVmCount."
+        Write-Host ''
     }
 }
 
@@ -303,6 +313,7 @@ function Get-NextVmNames {
 Connect-VCenterIfNeeded
 
 $nameSelection = Read-VmNamePrefix
+Write-Host ''
 $targetCluster = Get-Cluster -Name $ClusterName -ErrorAction Stop
 
 $plan = $null
@@ -313,6 +324,7 @@ if ($nameSelection -eq 'CUSTOM') {
 
         if ($existingCustomVm.Count -gt 0) {
             Write-Warning "VM '$($existingCustomVm[0].Name)' already exists in cluster '$($targetCluster.Name)'. Enter another VM name."
+            Write-Host ''
             continue
         }
 
@@ -320,6 +332,7 @@ if ($nameSelection -eq 'CUSTOM') {
     }
 
     $vmNames = @($customVmName)
+    Write-Host ''
     Write-Host "Custom VM name '$customVmName' is available in cluster '$($targetCluster.Name)'." -ForegroundColor Green
 }
 else {
@@ -350,12 +363,15 @@ Write-AlignedDetails -Indent 0 -Details ([ordered]@{
         'VM folder'         = $FolderName
         'Power on'          = $PowerOnAfterCreate
     })
+Write-Host ''
 
 $confirmation = (Read-Host 'Create the listed virtual machines? [yes/no]').Trim()
 if ($confirmation -notmatch '^(?i:y|yes)$') {
+    Write-Host ''
     Write-Host 'Cancelled. No VMs were created.' -ForegroundColor Yellow
     return
 }
+Write-Host ''
 
 $template = Get-Template -Name $TemplateName -ErrorAction Stop
 $rootPool = Get-ClusterRootResourcePool -Name $ClusterName

@@ -263,7 +263,10 @@ function Read-YesNo {
         switch -Regex ($answer) {
             '^(?i:y|yes)$' { return $true }
             '^(?i:n|no)$'  { return $false }
-            default { Write-Warning "Enter yes, no, or 'exit'." }
+            default {
+                Write-Warning "Enter yes, no, or 'exit'."
+                Write-Host ''
+            }
         }
     }
 }
@@ -292,6 +295,7 @@ function Get-VCenterConnection {
         Stop-IfExitRequested
         if ([string]::IsNullOrWhiteSpace($serverName)) {
             Write-Warning 'A vCenter Server host name or IP address is required.'
+            Write-Host ''
         }
     }
 
@@ -336,18 +340,26 @@ function Select-ExactVM {
 
         if ([string]::IsNullOrWhiteSpace($name)) {
             Write-Warning 'A VM name is required.'
+            Write-Host ''
             continue
         }
         if ($name.IndexOfAny([char[]]'*?[]') -ge 0) {
             Write-Warning 'Wildcards are not allowed. Enter the VM name exactly.'
+            Write-Host ''
             continue
         }
 
         $matches = @($allVMs | Where-Object { $_.Name -ieq $name })
         switch ($matches.Count) {
-            0 { Write-Warning "No VM named '$name' was found on $($Server.Name)." }
+            0 {
+                Write-Warning "No VM named '$name' was found on $($Server.Name)."
+                Write-Host ''
+            }
             1 { return $matches[0] }
-            default { Write-Warning "More than one VM is named '$name'. Use a unique VM name." }
+            default {
+                Write-Warning "More than one VM is named '$name'. Use a unique VM name."
+                Write-Host ''
+            }
         }
     }
 }
@@ -359,9 +371,11 @@ function Select-HardwareAction {
 
     while ($true) {
         Write-Host "`nSelect a hardware operation:" -ForegroundColor Cyan
+        Write-Host ''
         Write-Host '  1. vCPU'
         Write-Host '  2. Add or remove memory'
         Write-Host '  3. Additional disk'
+        Write-Host ''
 
         $selection = Read-ExitAwareInput -Prompt 'Select an option (1, 2, or 3)'
         Stop-IfExitRequested
@@ -391,8 +405,10 @@ function Select-MemoryOperation {
 
     while ($true) {
         Write-Host "`nSelect a memory operation:" -ForegroundColor Cyan
+        Write-Host ''
         Write-Host '  1. Add memory'
         Write-Host '  2. Remove memory'
+        Write-Host ''
 
         $selection = Read-ExitAwareInput -Prompt 'Select an option (1 or 2)'
         Stop-IfExitRequested
@@ -420,9 +436,11 @@ function Read-TargetCpuCount {
 
     while ($true) {
         Write-Host "`nSelect the desired total vCPU count:" -ForegroundColor Cyan
+        Write-Host ''
         for ($index = 0; $index -lt $availableCpuCounts.Count; $index++) {
             Write-Host "  $($index + 1). $($availableCpuCounts[$index]) vCPUs"
         }
+        Write-Host ''
 
         $selection = Read-ExitAwareInput -Prompt "Select a menu option or enter the desired total vCPU count ($($availableCpuCounts -join ', '))"
         Stop-IfExitRequested
@@ -438,6 +456,7 @@ function Read-TargetCpuCount {
         }
 
         Write-Warning "Choose one of these totals: $($availableCpuCounts -join ', ')."
+        Write-Host ''
     }
 }
 
@@ -455,6 +474,7 @@ function Read-PositiveDecimal {
             return $number
         }
         Write-Warning 'Enter a number greater than zero.'
+        Write-Host ''
     }
 }
 
@@ -688,6 +708,7 @@ function Select-Datastore {
         }
     }
     $display | Format-Table -AutoSize | Out-Host
+    Write-Host ''
 
     while ($true) {
         $choice = Read-ExitAwareInput -Prompt 'Select the datastore for the new virtual disk by entering its number'
@@ -697,6 +718,7 @@ function Select-Datastore {
             return $Datastores[$number - 1]
         }
         Write-Warning "Enter a number from 1 to $($Datastores.Count)."
+        Write-Host ''
     }
 }
 
@@ -859,6 +881,7 @@ function Select-ScsiController {
         Select-Object Choice, Controller, Type, FreeSlots, @{ Name = 'AttachedDisks'; Expression = { $_.AttachmentSummary } } |
         Format-Table -AutoSize -Wrap |
         Out-Host
+    Write-Host ''
 
     while ($true) {
         $selection = Read-ExitAwareInput -Prompt 'Select the SCSI controller for the new virtual disk by entering its choice number'
@@ -867,12 +890,14 @@ function Select-ScsiController {
         [int]$choice = 0
         if (-not [int]::TryParse($selection, [ref]$choice) -or $choice -lt 1 -or $choice -gt $controllers.Count) {
             Write-Warning "Enter a Choice number from 1 to $($controllers.Count)."
+            Write-Host ''
             continue
         }
 
         $selectedController = $controllers[$choice - 1]
         if ($selectedController.FreeSlots -eq 0) {
             Write-Warning "$($selectedController.Controller) is full. Choose a controller with at least one free slot."
+            Write-Host ''
             continue
         }
 
@@ -1081,12 +1106,16 @@ try {
     Write-Banner
     $server = Get-VCenterConnection
     Write-Host "Using vCenter connection '$($server.Name)'." -ForegroundColor Green
+    Write-Host ''
 
     $vmArguments = @{ Server = $server }
     if ($vmNameWasSupplied) {
         $vmArguments.InitialVMName = $VMName
     }
     $vm = Select-ExactVM @vmArguments
+    if (-not $vmNameWasSupplied) {
+        Write-Host ''
+    }
     $currentCoresPerSocket = Get-VmCoresPerSocket -VM $vm
     Write-Host "Selected VM '$($vm.Name)'." -ForegroundColor Green
     $cpuHotAddEnabled = [bool]$vm.ExtensionData.Config.CpuHotAddEnabled
@@ -1144,10 +1173,13 @@ try {
                     'vCPU'             = "$($vm.NumCpu) -> $newCpuCount"
                     'Cores per socket' = "$currentCoresPerSocket -> $newCoresPerSocket"
                 })
+            Write-Host ''
             if (-not (Read-YesNo -Prompt 'Apply the proposed vCPU configuration?')) {
+                Write-Host ''
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
                 return
             }
+            Write-Host ''
 
             $cpuChangeParameters = @{
                 VM          = $vm
@@ -1221,10 +1253,13 @@ try {
                     'Operation' = $memoryChangeDescription
                     'Memory'    = "$($vm.MemoryGB) GB -> $newMemoryGB GB"
                 })
+            Write-Host ''
             if (-not (Read-YesNo -Prompt 'Apply the proposed memory configuration?')) {
+                Write-Host ''
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
                 return
             }
+            Write-Host ''
 
             Set-VM -VM $vm -MemoryGB $newMemoryGB -Confirm:$false -Server $server -ErrorAction Stop | Out-Null
             $verifiedVm = Get-VM -Id $vm.Id -Server $server -ErrorAction Stop
@@ -1259,10 +1294,13 @@ try {
             if ([decimal]$targetDatastore.FreeSpaceGB -lt $capacity) {
                 Write-Warning "The datastore reports only $([math]::Round([decimal]$targetDatastore.FreeSpaceGB, 2)) GB free. Thin provisioning may overcommit storage; Thick formats may fail."
             }
+            Write-Host ''
             if (-not (Read-YesNo -Prompt 'Create and attach the proposed virtual disk?')) {
+                Write-Host ''
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
                 return
             }
+            Write-Host ''
 
             $result = Add-UniqueVirtualDisk -VM $vm -Server $server -Datastore $targetDatastore -CapacityGB $capacity -Format $StorageFormat -ExpectedDatastorePath $plannedPath -ControllerKey $selectedController.ControllerKey
             Write-Host "Successfully added '$($result.HardDisk.Name)' to '$($vm.Name)'." -ForegroundColor Green
