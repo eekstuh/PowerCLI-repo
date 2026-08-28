@@ -572,8 +572,8 @@ function Resolve-InteractiveActiveDirectoryUser {
             $adUser = Resolve-ActiveDirectoryUser -AccountName $resolvedAccount -Context 'Active Directory account'
             $consultantLabel = if ($adUser.Consultant) { 'Yes' } else { 'No' }
             Write-AlignedDetails -Indent 0 -Details ([ordered]@{
-                    'Resolved Active Directory user' = "$($adUser.FullName) (source: $($adUser.FullNameSource)) [$($adUser.GuestAccountName)]"
-                    'Consultant'                     = "$consultantLabel ($($adUser.ConsultantOU))"
+                    'Resolved Active Directory user' = "$($adUser.FullName) [$($adUser.GuestAccountName)]"
+                    'Consultant'                     = $consultantLabel
                 }) -Colors @{
                     'Resolved Active Directory user' = 'Green'
                     'Consultant'                     = 'Green'
