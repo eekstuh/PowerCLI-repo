@@ -898,6 +898,7 @@ function Select-AssignmentVM {
                 'Assigned VM name' = $targetName
                 'AD account'       = $ADAccount
             })
+        Write-Host ''
         if (Read-YesNo -Prompt "Use virtual machine '$($vm.Name)' for this assignment?") {
             return [pscustomobject]@{
                 VM         = $vm
@@ -985,6 +986,7 @@ function Select-SpecificAssignmentVM {
                 'Assigned VM name' = $targetName
                 'AD account'       = $ADAccount
             })
+        Write-Host ''
         if (Read-YesNo -Prompt "Use virtual machine '$($vm.Name)' for this assignment?") {
             return [pscustomobject]@{
                 VM         = $vm
