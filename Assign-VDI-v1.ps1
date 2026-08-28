@@ -313,11 +313,13 @@ function Read-NamingConvention {
 
     while ($true) {
         Write-Host "`nSelect a VDI assignment option:" -ForegroundColor Cyan
+        Write-Host ''
         Write-Host '  1. 11VMGC'
         Write-Host '  2. 11VMDEV'
         Write-Host '  3. 11VMSAS'
         Write-Host '  4. Specify VM name'
         Write-Host '  5. Add an additional user to already assigned VDI (VM will not be renamed)'
+        Write-Host ''
 
         $selection = Read-ExitAwareInput -Prompt 'Select an option (1, 2, 3, 4, or 5)'
         Stop-IfExitRequested
