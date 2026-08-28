@@ -317,7 +317,7 @@ function Read-NamingConvention {
         Write-Host '  2. 11VMDEV'
         Write-Host '  3. 11VMSAS'
         Write-Host '  4. Specify VM name'
-        Write-Host '  5. Add a user to an assigned VDI (no rename)'
+        Write-Host '  5. Add an additional user to already assigned VDI (VM will not be renamed)'
 
         $selection = Read-ExitAwareInput -Prompt 'Select an option (1, 2, 3, 4, or 5)'
         Stop-IfExitRequested
