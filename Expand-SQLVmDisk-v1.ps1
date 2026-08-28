@@ -349,7 +349,7 @@ function Select-ExactVM {
     }
 
     while ($true) {
-        $vmName = Read-ExitAwareInput -Prompt 'Enter the exact virtual machine name'
+        $vmName = Read-ExitAwareInput -Prompt 'Enter VM name'
         Stop-IfExitRequested
 
         if ([string]::IsNullOrWhiteSpace($vmName)) {
