@@ -1471,7 +1471,7 @@ try {
             }
 
             $guestAdminCredential = Get-WindowsGuestCredential
-            Write-Host "`nGranting RDP Access inside '$($selectedVM.Name)'..." -ForegroundColor Cyan
+            Write-Host "Granting RDP Access inside '$($selectedVM.Name)'..." -ForegroundColor Cyan
             $accountResult = Add-GuestRemoteDesktopUserWithCorrection -VM $selectedVM -Credential $guestAdminCredential -InitialAccountName $workItem.ADAccountName -ExpectedADUserSID $workItem.ADUserSID
             $guestResult = $accountResult.GuestResult
             if (-not [bool]$guestResult.Verified) {
