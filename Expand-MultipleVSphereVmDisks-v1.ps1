@@ -160,6 +160,75 @@ function Stop-IfExitRequested {
     }
 }
 
+function Write-AlignedDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        Write-Host ('{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject])
+    }
+}
+
+function Write-VCenterConnectionDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Server
+    )
+
+    $connections = @($Server | Where-Object { $null -ne $_ })
+    if ($connections.Count -eq 0) {
+        throw 'No vCenter Server connection details are available.'
+    }
+
+    Write-Host ''
+    $heading = if ($connections.Count -eq 1) { 'Connected to vCenter Server:' } else { 'Connected to vCenter Servers:' }
+    Write-Host $heading -ForegroundColor Green
+    for ($index = 0; $index -lt $connections.Count; $index++) {
+        $connection = $connections[$index]
+        if ($connections.Count -gt 1) {
+            Write-Host "  Connection $($index + 1)" -ForegroundColor Green
+        }
+        $version = [string]$connection.Version
+        if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = 'Unavailable'
+        }
+        $release = ''
+        try {
+            $serviceInstance = Get-View -Id 'ServiceInstance-ServiceInstance' -Server $connection -ErrorAction Stop
+            $release = [string]$serviceInstance.Content.About.FullName
+        }
+        catch {
+            $release = ''
+        }
+        if ([string]::IsNullOrWhiteSpace($release)) {
+            $build = [string]$connection.Build
+            $release = if ([string]::IsNullOrWhiteSpace($build)) { 'Unavailable' } else { "Build $build" }
+        }
+        $indent = if ($connections.Count -eq 1) { 2 } else { 4 }
+        Write-AlignedDetails -Indent $indent -Details ([ordered]@{
+                'Host name' = [string]$connection.Name
+                'Version'   = $version
+                'Release'   = $release
+            })
+    }
+    Write-Host ''
+}
+
 function Get-VCenterConnection {
     $connections = @()
     foreach ($connection in (@($global:DefaultVIServer) + @($global:DefaultVIServers))) {
@@ -629,6 +698,7 @@ try {
     }
 
     $server = Get-VCenterConnection
+    Write-VCenterConnectionDetails -Server $server
     $requestedItems = @(Get-WorkItems)
     $allVMs = @(Get-VM -Server $server -ErrorAction Stop)
     $results = @()

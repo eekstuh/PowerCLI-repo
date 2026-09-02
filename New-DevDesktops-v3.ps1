@@ -61,6 +61,52 @@ function Write-AlignedDetails {
     }
 }
 
+function Write-VCenterConnectionDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Server
+    )
+
+    $connections = @($Server | Where-Object { $null -ne $_ })
+    if ($connections.Count -eq 0) {
+        throw 'No vCenter Server connection details are available.'
+    }
+
+    Write-Host ''
+    $heading = if ($connections.Count -eq 1) { 'Connected to vCenter Server:' } else { 'Connected to vCenter Servers:' }
+    Write-Host $heading -ForegroundColor Green
+    for ($index = 0; $index -lt $connections.Count; $index++) {
+        $connection = $connections[$index]
+        if ($connections.Count -gt 1) {
+            Write-Host "  Connection $($index + 1)" -ForegroundColor Green
+        }
+        $version = [string]$connection.Version
+        if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = 'Unavailable'
+        }
+        $release = ''
+        try {
+            $serviceInstance = Get-View -Id 'ServiceInstance-ServiceInstance' -Server $connection -ErrorAction Stop
+            $release = [string]$serviceInstance.Content.About.FullName
+        }
+        catch {
+            $release = ''
+        }
+        if ([string]::IsNullOrWhiteSpace($release)) {
+            $build = [string]$connection.Build
+            $release = if ([string]::IsNullOrWhiteSpace($build)) { 'Unavailable' } else { "Build $build" }
+        }
+        $indent = if ($connections.Count -eq 1) { 2 } else { 4 }
+        Write-AlignedDetails -Indent $indent -Details ([ordered]@{
+                'Host name' = [string]$connection.Name
+                'Version'   = $version
+                'Release'   = $release
+            })
+    }
+    Write-Host ''
+}
+
 function Connect-VCenterIfNeeded {
 
     $connectionCandidates = @($global:DefaultVIServers) + @($global:DefaultVIServer)
@@ -71,9 +117,7 @@ function Connect-VCenterIfNeeded {
     )
 
     if ($activeConnections.Count -gt 0) {
-        $connectionNames = $activeConnections.Name -join ', '
-        Write-Host "Using existing vCenter connection: $connectionNames" -ForegroundColor Green
-        return
+        return $activeConnections
     }
 
     Write-Warning 'No active vCenter connection was found.'
@@ -94,9 +138,8 @@ function Connect-VCenterIfNeeded {
         }
 
         try {
-            [void](Connect-VIServer -Server $serverName -Credential $credential -ErrorAction Stop)
-            Write-Host "Connected to vCenter Server: $serverName" -ForegroundColor Green
-            return
+            $connection = Connect-VIServer -Server $serverName -Credential $credential -ErrorAction Stop
+            return $connection
         }
         catch {
             Write-Warning "Could not connect to vCenter Server '$serverName': $($_.Exception.Message)"
@@ -310,7 +353,8 @@ function Get-NextVmNames {
 # BUILD PLAN
 # ------------------------------------------------------------
 
-Connect-VCenterIfNeeded
+$vCenterServers = @(Connect-VCenterIfNeeded)
+Write-VCenterConnectionDetails -Server $vCenterServers
 
 $nameSelection = Read-VmNamePrefix
 Write-Host ''
