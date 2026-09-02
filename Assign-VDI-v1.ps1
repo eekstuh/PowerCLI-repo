@@ -20,6 +20,11 @@ delimiter ' - '. The operator may enter either the full current inventory name
 or only its base VM name without the assigned-user suffix. This option verifies
 the guest group membership but never renames the virtual machine.
 
+The REASSIGN option assigns an existing powered-on VDI to a different user. It
+adds and verifies the new user's RDP access and renames the VM for the new user.
+The previous user's RDP access is not removed because that access is managed
+through the RemoteDesktopUsersGPO group.
+
 If an existing VM name already ends with the same AD full name, the script lists
 the matching VM or VMs and asks whether another VDI should be assigned.
 
@@ -49,17 +54,20 @@ Optional Active Directory domain controller or domain name used for user
 lookups. If omitted, the ActiveDirectory module uses its default domain.
 
 .PARAMETER NamingConvention
-Virtual machine assignment option: 11VMGC, 11VMDEV, 11VMSAS, SPECIFIC, or
-EXISTING. SPECIFIC assigns an exact unassigned VM name instead of selecting from
-the numbered pool. EXISTING grants access to an already-assigned VM selected by
-its full current name or base VM name, without renaming it. CUSTOM remains an
-alias for SPECIFIC, and ASSIGNED remains an alias for EXISTING.
+Virtual machine assignment option: 11VMGC, 11VMDEV, 11VMSAS, SPECIFIC,
+REASSIGN, or EXISTING. SPECIFIC assigns an exact unassigned VM name instead of
+selecting from the numbered pool. REASSIGN grants the new user RDP access and
+renames an already-assigned VM without removing the previous user's GPO-managed
+access. EXISTING grants access to an already-assigned VM without renaming it.
+CUSTOM remains an alias for SPECIFIC, and ASSIGNED remains an alias for
+EXISTING.
 
 .PARAMETER VMName
-Exact unassigned VM name to use with NamingConvention SPECIFIC. For EXISTING,
-use either the full current name or its base VM name without the assigned-user
-suffix. For example, both '11VMDEV501' and '11VMDEV501 - First Last Name' can
-resolve the assigned VM. If omitted in interactive mode, the script prompts.
+Exact unassigned VM name to use with NamingConvention SPECIFIC. For REASSIGN or
+EXISTING, use either the full current name or its base VM name without the
+assigned-user suffix. For example, both '11VMDEV501' and
+'11VMDEV501 - First Last Name' can resolve the assigned VM. If omitted in
+interactive mode, the script prompts.
 
 .PARAMETER ADAccountName
 Active Directory account to add to the guest's local Remote Desktop Users group.
@@ -72,9 +80,9 @@ for the VMware Tools guest operation.
 Optional path to a CSV file for assigning multiple users. Required columns are
 NamingConvention and ADAccountName. Interactive user fields cannot be combined
 with InputCsvPath. For a SPECIFIC row, include the exact unassigned VM name. For
-an EXISTING row, include the full current or base VM name. The user's full name
-and consultant status are retrieved from Active Directory. Users under
-OU=noneDOHMHusers are consultants; users under OU=Agency-Users are not
+a REASSIGN or EXISTING row, include the full current or base VM name. The user's
+full name and consultant status are retrieved from Active Directory. Users
+under OU=noneDOHMHusers are consultants; users under OU=Agency-Users are not
 consultants.
 
 .EXAMPLE
@@ -93,12 +101,20 @@ Resolves the assigned VDI whose current name starts with '11VMDEV501 - ', grants
 secondaryuser RDP access, and leaves the VM name unchanged.
 
 .EXAMPLE
+.\Assign-VDI-v1.ps1 -NamingConvention REASSIGN -VMName 11VMDEV501 -ADAccountName newuser
+
+Resolves the assigned VDI whose current name starts with '11VMDEV501 - ', grants
+newuser RDP access, and renames the VM for the new user. The previous user's
+GPO-managed RDP access is not removed.
+
+.EXAMPLE
 .\Assign-VDI-v1.ps1 -InputCsvPath .\DesktopAssignments.csv
 
 The CSV format is:
 NamingConvention,VMName,ADAccountName
 11VMGC,,jdoe
 SPECIFIC,11VMDEV501,CONTOSO\jsmith
+REASSIGN,11VMDEV502,CONTOSO\newuser
 EXISTING,11VMDEV502,CONTOSO\secondaryuser
 #>
 [CmdletBinding(DefaultParameterSetName = 'Interactive', SupportsShouldProcess)]
@@ -119,7 +135,7 @@ param(
     [string]$ADServer,
 
     [Parameter(ParameterSetName = 'Interactive')]
-    [ValidateSet('11VMGC', '11VMDEV', '11VMSAS', 'SPECIFIC', 'CUSTOM', 'EXISTING', 'ASSIGNED')]
+    [ValidateSet('11VMGC', '11VMDEV', '11VMSAS', 'SPECIFIC', 'CUSTOM', 'REASSIGN', 'EXISTING', 'ASSIGNED')]
     [string]$NamingConvention,
 
     [Parameter(ParameterSetName = 'Interactive')]
@@ -364,10 +380,11 @@ function Read-NamingConvention {
         Write-Host '  2. 11VMDEV'
         Write-Host '  3. 11VMSAS'
         Write-Host '  4. Specify VM name'
-        Write-Host '  5. Add an additional user to already assigned VDI (VM will not be renamed)'
+        Write-Host '  5. Reassign an assigned VDI to a different user'
+        Write-Host '  6. Add an additional user to already assigned VDI (VM will not be renamed)'
         Write-Host ''
 
-        $selection = Read-ExitAwareInput -Prompt 'Select an option (1, 2, 3, 4, or 5)'
+        $selection = Read-ExitAwareInput -Prompt 'Select an option (1, 2, 3, 4, 5, or 6)'
         Stop-IfExitRequested
         switch ($selection.Trim().ToUpperInvariant()) {
             '1'       { return '11VMGC' }
@@ -379,10 +396,12 @@ function Read-NamingConvention {
             '4'        { return 'SPECIFIC' }
             'SPECIFIC' { return 'SPECIFIC' }
             'CUSTOM'   { return 'SPECIFIC' }
-            '5'        { return 'EXISTING' }
+            '5'        { return 'REASSIGN' }
+            'REASSIGN' { return 'REASSIGN' }
+            '6'        { return 'EXISTING' }
             'EXISTING' { return 'EXISTING' }
             'ASSIGNED' { return 'EXISTING' }
-            default { Write-Warning 'Select option 1, 2, 3, 4, or 5.' }
+            default { Write-Warning 'Select option 1, 2, 3, 4, 5, or 6.' }
         }
     }
 }
@@ -647,16 +666,16 @@ function Get-AssignmentWorkItems {
         $requestedVMName = if ($selectedPrefix -eq 'SPECIFIC') {
             Resolve-RequiredText -InitialValue $VMName -WasSupplied $vmNameWasSupplied -Prompt 'Enter the exact unassigned VM name' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
         }
-        elseif ($selectedPrefix -eq 'EXISTING') {
+        elseif ($selectedPrefix -in @('REASSIGN', 'EXISTING')) {
             Resolve-RequiredText -InitialValue $VMName -WasSupplied $vmNameWasSupplied -Prompt "Enter the assigned VM name; the assigned user's name is optional" -FieldName 'Virtual machine name'
         }
         else {
             if ($vmNameWasSupplied) {
-                throw 'VMName can be used only when NamingConvention is SPECIFIC, CUSTOM, EXISTING, or ASSIGNED.'
+                throw 'VMName can be used only when NamingConvention is SPECIFIC, CUSTOM, REASSIGN, EXISTING, or ASSIGNED.'
             }
             ''
         }
-        if ($selectedPrefix -in @('SPECIFIC', 'EXISTING') -and -not $vmNameWasSupplied) {
+        if ($selectedPrefix -in @('SPECIFIC', 'REASSIGN', 'EXISTING') -and -not $vmNameWasSupplied) {
             Write-Host ''
         }
         $resolvedADUser = Resolve-InteractiveActiveDirectoryUser
@@ -705,14 +724,14 @@ function Get-AssignmentWorkItems {
             elseif ($prefix -eq 'ASSIGNED') {
                 $prefix = 'EXISTING'
             }
-            if ($prefix -notin @('11VMGC', '11VMDEV', '11VMSAS', 'SPECIFIC', 'EXISTING')) {
-                throw "CSV row $rowNumber has an invalid NamingConvention '$($row.NamingConvention)'. Use 11VMGC, 11VMDEV, 11VMSAS, SPECIFIC, or EXISTING."
+            if ($prefix -notin @('11VMGC', '11VMDEV', '11VMSAS', 'SPECIFIC', 'REASSIGN', 'EXISTING')) {
+                throw "CSV row $rowNumber has an invalid NamingConvention '$($row.NamingConvention)'. Use 11VMGC, 11VMDEV, 11VMSAS, SPECIFIC, REASSIGN, or EXISTING."
             }
 
             $requestedVMName = if ($prefix -eq 'SPECIFIC') {
                 Resolve-RequiredText -InitialValue ([string]$row.VMName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber VMName" -RejectAssignmentDelimiter
             }
-            elseif ($prefix -eq 'EXISTING') {
+            elseif ($prefix -in @('REASSIGN', 'EXISTING')) {
                 Resolve-RequiredText -InitialValue ([string]$row.VMName) -WasSupplied $true -Prompt '' -FieldName "CSV row $rowNumber VMName"
             }
             else { '' }
@@ -1078,8 +1097,19 @@ function Select-ExistingAssignmentVM {
         [string]$ADAccount,
 
         [Parameter()]
+        [AllowEmptyString()]
+        [string]$AssignmentLabel = '',
+
+        [Parameter()]
+        [switch]$Reassign,
+
+        [Parameter()]
         [switch]$AllowNameCorrection
     )
+
+    if ($Reassign -and [string]::IsNullOrWhiteSpace($AssignmentLabel)) {
+        throw 'An assignment label is required when reassigning a VDI.'
+    }
 
     $requestedName = $InitialVMName
     while ($true) {
@@ -1165,21 +1195,59 @@ function Select-ExistingAssignmentVM {
             continue
         }
 
-        $proposalDetails = [ordered]@{}
-        if ($requestWasBaseName) {
-            $proposalDetails['Requested base VM name'] = $requestedName
-        }
-        $proposalDetails['Existing VDI name'] = $vm.Name
-        $proposalDetails['New AD account'] = $ADAccount
-        $proposalDetails['vSphere rename'] = 'No - the existing name will be preserved'
+        $baseVMName = [regex]::Replace([string]$vm.Name, '\s+-\s+.+$', '')
+        if ($Reassign) {
+            $targetName = "$baseVMName - $AssignmentLabel"
+            $nameCollision = @($AllVirtualMachines | Where-Object { $_.Name -ieq $targetName -and $_.Id -ne $vm.Id })
+            if ($nameCollision.Count -gt 0) {
+                $validationMessage = "The proposed reassigned VM name '$targetName' already exists in the cluster."
+                if (-not $AllowNameCorrection) {
+                    throw $validationMessage
+                }
+                Write-Warning $validationMessage
+                Write-Host ''
+                $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt "Enter another assigned VM name; the assigned user's name is optional" -FieldName 'Virtual machine name'
+                continue
+            }
 
-        Write-Host "`nProposed additional access assignment:" -ForegroundColor Cyan
-        Write-AlignedDetails -Details $proposalDetails
-        Write-Host ''
-        if (Read-YesNo -Prompt "Grant '$ADAccount' RDP access to assigned VDI '$($vm.Name)'?") {
-            return [pscustomobject]@{
-                VM         = $vm
-                TargetName = $vm.Name
+            $currentAssignment = [regex]::Replace([string]$vm.Name, '^.+?\s+-\s+', '')
+            $proposalDetails = [ordered]@{}
+            if ($requestWasBaseName) {
+                $proposalDetails['Requested base VM name'] = $requestedName
+            }
+            $proposalDetails['Current VM name'] = $vm.Name
+            $proposalDetails['Current assignment'] = $currentAssignment
+            $proposalDetails['New AD account'] = $ADAccount
+            $proposalDetails['Reassigned VM name'] = $targetName
+            $proposalDetails['Previous RDP access'] = 'Not removed - managed through RemoteDesktopUsersGPO'
+
+            Write-Host "`nProposed VDI reassignment:" -ForegroundColor Cyan
+            Write-AlignedDetails -Details $proposalDetails
+            Write-Host ''
+            if (Read-YesNo -Prompt "Reassign VDI '$($vm.Name)' to '$ADAccount'?") {
+                return [pscustomobject]@{
+                    VM         = $vm
+                    TargetName = $targetName
+                }
+            }
+        }
+        else {
+            $proposalDetails = [ordered]@{}
+            if ($requestWasBaseName) {
+                $proposalDetails['Requested base VM name'] = $requestedName
+            }
+            $proposalDetails['Existing VDI name'] = $vm.Name
+            $proposalDetails['New AD account'] = $ADAccount
+            $proposalDetails['vSphere rename'] = 'No - the existing name will be preserved'
+
+            Write-Host "`nProposed additional access assignment:" -ForegroundColor Cyan
+            Write-AlignedDetails -Details $proposalDetails
+            Write-Host ''
+            if (Read-YesNo -Prompt "Grant '$ADAccount' RDP access to assigned VDI '$($vm.Name)'?") {
+                return [pscustomobject]@{
+                    VM         = $vm
+                    TargetName = $vm.Name
+                }
             }
         }
 
@@ -1497,12 +1565,16 @@ try {
                 continue
             }
 
-            if ($workItem.NamingConvention -eq 'EXISTING') {
+            if ($workItem.NamingConvention -in @('REASSIGN', 'EXISTING')) {
                 $existingSelectionParameters = @{
                     InitialVMName      = $workItem.RequestedVMName
                     AllVirtualMachines = $allVirtualMachines
                     Server             = $server
                     ADAccount          = $workItem.ADAccountName
+                }
+                if ($workItem.NamingConvention -eq 'REASSIGN') {
+                    $existingSelectionParameters.AssignmentLabel = $assignmentLabel
+                    $existingSelectionParameters.Reassign = $true
                 }
                 if ($script:InvocationParameterSet -eq 'Interactive') {
                     $existingSelectionParameters.AllowNameCorrection = $true
@@ -1528,19 +1600,22 @@ try {
                 $selection = Select-AssignmentVM -Candidates $candidates -AllVirtualMachines $allVirtualMachines -Server $server -AssignmentLabel $assignmentLabel -ADAccount $workItem.ADAccountName
             }
             if ($null -eq $selection) {
-                $message = if ($workItem.NamingConvention -in @('SPECIFIC', 'EXISTING')) { 'The specified virtual machine was not selected.' } else { 'All available candidates were skipped by the operator.' }
+                $message = if ($workItem.NamingConvention -in @('SPECIFIC', 'REASSIGN', 'EXISTING')) { 'The specified VM was not selected.' } else { 'All available candidates were skipped by the operator.' }
                 Write-Host "$message No changes were made for '$personName'." -ForegroundColor Yellow
                 $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Skipped' -Message $message
                 continue
             }
 
-            if ($workItem.NamingConvention -in @('SPECIFIC', 'EXISTING')) {
+            if ($workItem.NamingConvention -in @('SPECIFIC', 'REASSIGN', 'EXISTING')) {
                 $workItem.RequestedVMName = $selection.VM.Name
             }
             $selectedVM = $selection.VM
             $targetVMName = $selection.TargetName
             $renameRequired = $workItem.NamingConvention -ne 'EXISTING'
-            $requestedAction = if ($renameRequired) {
+            $requestedAction = if ($workItem.NamingConvention -eq 'REASSIGN') {
+                "Grant RDP access to '$($workItem.ADAccountName)' and reassign the VM as '$targetVMName'; previous GPO-managed access will not be removed"
+            }
+            elseif ($renameRequired) {
                 "Grant RDP access to '$($workItem.ADAccountName)' and rename the VM to '$targetVMName'"
             }
             else {
@@ -1600,7 +1675,12 @@ try {
             }
 
             $script:CompletedAssignments++
-            if ($renameRequired) {
+            if ($workItem.NamingConvention -eq 'REASSIGN') {
+                Write-Host "VDI reassignment completed successfully for '$personName' on '$targetVMName'." -ForegroundColor Green
+                Write-Host "Note: The previous user's RDP access was not removed because access is managed through the RemoteDesktopUsersGPO group." -ForegroundColor Yellow
+                $completionMessage = 'New RDP access and the vSphere rename were verified; the previous user''s GPO-managed RDP access was not removed.'
+            }
+            elseif ($renameRequired) {
                 Write-Host "Assignment completed successfully for '$personName' on '$targetVMName'." -ForegroundColor Green
                 $completionMessage = 'RDP access and the vSphere rename were verified.'
             }
