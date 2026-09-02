@@ -834,7 +834,7 @@ function Confirm-DuplicateUserAssignment {
     }
 
     $names = @($matches.Name | Sort-Object)
-    Write-Warning "A virtual machine assignment for '$FullName' already exists in the cluster: $($names -join ', ')"
+    Write-Warning "an existing virtual machine is already assigned to '$FullName'"
     Write-Host ''
     $confirmed = Read-YesNo -Prompt "Are you sure you want to assign another VDI to '$FullName'?"
     if ($confirmed) {
