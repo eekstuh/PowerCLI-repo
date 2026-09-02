@@ -1,0 +1,4 @@
+interface:
+  display_name: "vSphere 8u3 PowerCLI"
+  short_description: "Build safer PowerCLI scripts for vSphere 8u3"
+  default_prompt: "Use $vsphere-8u3-powercli to create or update a PowerCLI script in this repository."
