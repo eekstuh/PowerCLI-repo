@@ -172,23 +172,15 @@ function Write-VCenterConnectionDetails {
         if ([string]::IsNullOrWhiteSpace($version)) {
             $version = 'Unavailable'
         }
-        $release = ''
-        try {
-            $serviceInstance = Get-View -Id 'ServiceInstance-ServiceInstance' -Server $connection -ErrorAction Stop
-            $release = [string]$serviceInstance.Content.About.FullName
-        }
-        catch {
-            $release = ''
-        }
-        if ([string]::IsNullOrWhiteSpace($release)) {
-            $build = [string]$connection.Build
-            $release = if ([string]::IsNullOrWhiteSpace($build)) { 'Unavailable' } else { "Build $build" }
+        $build = [string]$connection.Build
+        if ([string]::IsNullOrWhiteSpace($build)) {
+            $build = 'Unavailable'
         }
         $indent = if ($connections.Count -eq 1) { 2 } else { 4 }
         Write-AlignedDetails -Indent $indent -Details ([ordered]@{
                 'Host name' = [string]$connection.Name
                 'Version'   = $version
-                'Release'   = $release
+                'Build'     = $build
             })
     }
     Write-Host ''

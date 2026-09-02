@@ -25,9 +25,8 @@ decisions derived from the existing scripts; they are not universal PowerCLI rul
 - If no unambiguous active connection exists, prompt for the server and then credentials.
 - Never call Connect-VIServer without a resolved -Server value.
 - Immediately after selecting or establishing the connection, display the vCenter host
-  name, version, and API-reported full release as an aligned label/value block. Fall
-  back to the connection build when the full release is unavailable. If a workflow
-  intentionally uses multiple active connections, display one block for each connection.
+  name, version, and build as an aligned label/value block. If a workflow intentionally
+  uses multiple active connections, display one block for each connection.
 - Do not use a bare Get-VIServer as a connection-discovery shortcut. Some installed
   environments resolve it through a legacy alias and prompt for Connect-VIServer's
   mandatory Server parameter.
