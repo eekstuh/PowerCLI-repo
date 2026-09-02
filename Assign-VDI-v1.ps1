@@ -15,9 +15,10 @@ Remote Desktop Users group. The vSphere inventory name is changed only after the
 guest operation succeeds. The Windows computer name is not changed.
 
 The EXISTING option grants an additional user RDP access to a powered-on VDI
-that is already assigned and whose exact vSphere name contains the assignment
-delimiter ' - '. This option verifies the guest group membership but never
-renames the virtual machine.
+that is already assigned and whose current vSphere name contains the assignment
+delimiter ' - '. The operator may enter either the full current inventory name
+or only its base VM name without the assigned-user suffix. This option verifies
+the guest group membership but never renames the virtual machine.
 
 If an existing VM name already ends with the same AD full name, the script lists
 the matching VM or VMs and asks whether another VDI should be assigned.
@@ -50,14 +51,15 @@ lookups. If omitted, the ActiveDirectory module uses its default domain.
 .PARAMETER NamingConvention
 Virtual machine assignment option: 11VMGC, 11VMDEV, 11VMSAS, SPECIFIC, or
 EXISTING. SPECIFIC assigns an exact unassigned VM name instead of selecting from
-the numbered pool. EXISTING grants access to an exact, already-assigned VM name
-without renaming it. CUSTOM remains an alias for SPECIFIC, and ASSIGNED remains
-an alias for EXISTING.
+the numbered pool. EXISTING grants access to an already-assigned VM selected by
+its full current name or base VM name, without renaming it. CUSTOM remains an
+alias for SPECIFIC, and ASSIGNED remains an alias for EXISTING.
 
 .PARAMETER VMName
-Exact virtual machine name to use with NamingConvention SPECIFIC or EXISTING.
-If omitted in interactive mode, the script prompts for it. An EXISTING name must
-include its current assignment suffix, such as '11VMDEV501 - First Last Name'.
+Exact unassigned VM name to use with NamingConvention SPECIFIC. For EXISTING,
+use either the full current name or its base VM name without the assigned-user
+suffix. For example, both '11VMDEV501' and '11VMDEV501 - First Last Name' can
+resolve the assigned VM. If omitted in interactive mode, the script prompts.
 
 .PARAMETER ADAccountName
 Active Directory account to add to the guest's local Remote Desktop Users group.
@@ -69,10 +71,11 @@ for the VMware Tools guest operation.
 .PARAMETER InputCsvPath
 Optional path to a CSV file for assigning multiple users. Required columns are
 NamingConvention and ADAccountName. Interactive user fields cannot be combined
-with InputCsvPath. For a SPECIFIC or EXISTING row, include a VMName column and
-the exact virtual machine name. The user's full name and consultant status are
-retrieved from Active Directory. Users under OU=noneDOHMHusers are consultants;
-users under OU=Agency-Users are not consultants.
+with InputCsvPath. For a SPECIFIC row, include the exact unassigned VM name. For
+an EXISTING row, include the full current or base VM name. The user's full name
+and consultant status are retrieved from Active Directory. Users under
+OU=noneDOHMHusers are consultants; users under OU=Agency-Users are not
+consultants.
 
 .EXAMPLE
 .\Assign-VDI-v1.ps1
@@ -84,10 +87,10 @@ users under OU=Agency-Users are not consultants.
 .\Assign-VDI-v1.ps1 -NamingConvention SPECIFIC -VMName 11VMDEV501 -ADAccountName jdoe
 
 .EXAMPLE
-.\Assign-VDI-v1.ps1 -NamingConvention EXISTING -VMName '11VMDEV501 - Primary User' -ADAccountName secondaryuser
+.\Assign-VDI-v1.ps1 -NamingConvention EXISTING -VMName 11VMDEV501 -ADAccountName secondaryuser
 
-Grants secondaryuser RDP access to the already-assigned VDI and leaves the VM
-name unchanged.
+Resolves the assigned VDI whose current name starts with '11VMDEV501 - ', grants
+secondaryuser RDP access, and leaves the VM name unchanged.
 
 .EXAMPLE
 .\Assign-VDI-v1.ps1 -InputCsvPath .\DesktopAssignments.csv
@@ -96,7 +99,7 @@ The CSV format is:
 NamingConvention,VMName,ADAccountName
 11VMGC,,jdoe
 SPECIFIC,11VMDEV501,CONTOSO\jsmith
-EXISTING,"11VMDEV502 - Primary User",CONTOSO\secondaryuser
+EXISTING,11VMDEV502,CONTOSO\secondaryuser
 #>
 [CmdletBinding(DefaultParameterSetName = 'Interactive', SupportsShouldProcess)]
 param(
@@ -607,7 +610,7 @@ function Get-AssignmentWorkItems {
             Resolve-RequiredText -InitialValue $VMName -WasSupplied $vmNameWasSupplied -Prompt 'Enter the exact unassigned VM name' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
         }
         elseif ($selectedPrefix -eq 'EXISTING') {
-            Resolve-RequiredText -InitialValue $VMName -WasSupplied $vmNameWasSupplied -Prompt 'Enter the exact name of the assigned VDI' -FieldName 'Virtual machine name'
+            Resolve-RequiredText -InitialValue $VMName -WasSupplied $vmNameWasSupplied -Prompt "Enter the assigned VM name; the assigned user's name is optional" -FieldName 'Virtual machine name'
         }
         else {
             if ($vmNameWasSupplied) {
@@ -1042,19 +1045,49 @@ function Select-ExistingAssignmentVM {
 
     $requestedName = $InitialVMName
     while ($true) {
-        $vmMatches = @($AllVirtualMachines | Where-Object { $_.Name -ieq $requestedName })
+        $requestIncludesAssignmentSuffix = $requestedName -match '\s+-\s+.+$'
+        $requestWasBaseName = -not $requestIncludesAssignmentSuffix
+        $selectedInventoryVM = $null
         $validationMessage = $null
-        if ($vmMatches.Count -eq 0) {
-            $validationMessage = "Virtual machine '$requestedName' was not found in the cluster."
+
+        if ($requestIncludesAssignmentSuffix) {
+            $exactMatches = @($AllVirtualMachines | Where-Object { $_.Name -ieq $requestedName })
+            if ($exactMatches.Count -eq 0) {
+                $validationMessage = "Assigned VM '$requestedName' was not found in the cluster."
+            }
+            elseif ($exactMatches.Count -gt 1) {
+                $validationMessage = "More than one VM is named '$requestedName' in the cluster."
+            }
+            else {
+                $selectedInventoryVM = $exactMatches[0]
+            }
         }
-        elseif ($vmMatches.Count -gt 1) {
-            $validationMessage = "More than one virtual machine is named '$requestedName' in the cluster."
+        else {
+            $escapedBaseName = [regex]::Escape($requestedName)
+            $assignedBaseMatches = @(
+                $AllVirtualMachines |
+                    Where-Object { $_.Name -imatch "^$escapedBaseName\s+-\s+.+$" }
+            )
+            if ($assignedBaseMatches.Count -eq 0) {
+                $unassignedExactMatches = @($AllVirtualMachines | Where-Object { $_.Name -ieq $requestedName })
+                if ($unassignedExactMatches.Count -gt 0) {
+                    $validationMessage = "VM '$requestedName' exists, but it does not appear to be assigned. Use option 4 to assign an unassigned VDI."
+                }
+                else {
+                    $validationMessage = "No assigned VM with base name '$requestedName' was found in the cluster."
+                }
+            }
+            elseif ($assignedBaseMatches.Count -gt 1) {
+                $matchingNames = @($assignedBaseMatches.Name | Sort-Object)
+                $validationMessage = "More than one assigned VM matches base name '$requestedName': $($matchingNames -join ', '). Enter the full current VM name."
+            }
+            else {
+                $selectedInventoryVM = $assignedBaseMatches[0]
+            }
         }
-        elseif ($vmMatches[0].Name -notmatch '\s+-\s+.+$') {
-            $validationMessage = "Virtual machine '$($vmMatches[0].Name)' does not appear to be assigned. Use option 4 to assign an unassigned VDI."
-        }
-        elseif ([string]$vmMatches[0].PowerState -ne 'PoweredOn') {
-            $validationMessage = "Virtual machine '$($vmMatches[0].Name)' is not powered on."
+
+        if ($null -eq $validationMessage -and [string]$selectedInventoryVM.PowerState -ne 'PoweredOn') {
+            $validationMessage = "VM '$($selectedInventoryVM.Name)' is not powered on."
         }
 
         if ($null -ne $validationMessage) {
@@ -1063,37 +1096,47 @@ function Select-ExistingAssignmentVM {
             }
             Write-Warning $validationMessage
             Write-Host ''
-            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact assigned VDI name' -FieldName 'Virtual machine name'
+            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt "Enter another assigned VM name; the assigned user's name is optional" -FieldName 'Virtual machine name'
             continue
         }
 
-        $vm = Get-RefreshedCandidate -Candidate ([pscustomobject]@{ VM = $vmMatches[0] }) -Server $Server
+        $vm = Get-RefreshedCandidate -Candidate ([pscustomobject]@{ VM = $selectedInventoryVM }) -Server $Server
         if ($null -eq $vm) {
             if (-not $AllowNameCorrection) {
-                throw "Virtual machine '$requestedName' does not currently meet the access-assignment requirements."
+                throw "VM '$requestedName' does not currently meet the access-assignment requirements."
             }
             Write-Host ''
-            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact assigned VDI name' -FieldName 'Virtual machine name'
+            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt "Enter another assigned VM name; the assigned user's name is optional" -FieldName 'Virtual machine name'
             continue
         }
 
-        if ($vm.Name -ine $requestedName -or $vm.Name -notmatch '\s+-\s+.+$') {
-            $validationMessage = "Virtual machine '$requestedName' changed in vSphere while it was being selected. Its current name is '$($vm.Name)'."
+        $refreshedNameIsValid = if ($requestWasBaseName) {
+            $vm.Name -imatch "^$([regex]::Escape($requestedName))\s+-\s+.+$"
+        }
+        else {
+            ($vm.Name -ieq $requestedName) -and ($vm.Name -match '\s+-\s+.+$')
+        }
+        if (-not $refreshedNameIsValid) {
+            $validationMessage = "VM '$requestedName' changed in vSphere while it was being selected. Its current name is '$($vm.Name)'."
             if (-not $AllowNameCorrection) {
                 throw $validationMessage
             }
             Write-Warning $validationMessage
             Write-Host ''
-            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact assigned VDI name' -FieldName 'Virtual machine name'
+            $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt "Enter another assigned VM name; the assigned user's name is optional" -FieldName 'Virtual machine name'
             continue
         }
 
+        $proposalDetails = [ordered]@{}
+        if ($requestWasBaseName) {
+            $proposalDetails['Requested base VM name'] = $requestedName
+        }
+        $proposalDetails['Existing VDI name'] = $vm.Name
+        $proposalDetails['New AD account'] = $ADAccount
+        $proposalDetails['vSphere rename'] = 'No - the existing name will be preserved'
+
         Write-Host "`nProposed additional access assignment:" -ForegroundColor Cyan
-        Write-AlignedDetails -Details ([ordered]@{
-                'Existing VDI name' = $vm.Name
-                'New AD account'    = $ADAccount
-                'vSphere rename'    = 'No - the existing name will be preserved'
-            })
+        Write-AlignedDetails -Details $proposalDetails
         Write-Host ''
         if (Read-YesNo -Prompt "Grant '$ADAccount' RDP access to assigned VDI '$($vm.Name)'?") {
             return [pscustomobject]@{
@@ -1107,7 +1150,7 @@ function Select-ExistingAssignmentVM {
         }
         Write-Host "Skipped '$($vm.Name)'." -ForegroundColor Yellow
         Write-Host ''
-        $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact assigned VDI name' -FieldName 'Virtual machine name'
+        $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt "Enter another assigned VM name; the assigned user's name is optional" -FieldName 'Virtual machine name'
     }
 }
 
