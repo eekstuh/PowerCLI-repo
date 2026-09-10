@@ -43,7 +43,9 @@ Optional positive number of GB to add to the selected virtual disk.
 .PARAMETER GuestCredential
 Optional Windows guest administrator credential used only if you choose to
 extend a guest partition. If omitted, the script asks for a guest username and
-opens the standard PowerShell credential prompt.
+opens the standard PowerShell credential prompt. If authentication fails while
+reading the initial guest partition inventory, the script prompts for a new
+username and password, including when GuestCredential was supplied initially.
 
 .PARAMETER GuestOnly
 Skips all vSphere virtual-disk changes and runs only the Windows guest partition
@@ -621,7 +623,9 @@ function Read-YesNo {
 }
 
 function Get-WindowsGuestCredential {
-    if ($null -ne $GuestCredential) {
+    param([switch]$ForcePrompt)
+
+    if (-not $ForcePrompt -and $null -ne $GuestCredential) {
         return $GuestCredential
     }
 
@@ -1161,12 +1165,29 @@ function Invoke-WindowsGuestPartitionExtension {
         return
     }
 
-    $credential = Get-WindowsGuestCredential
-    if ($null -eq $credential) {
-        return
-    }
+    $forceCredentialPrompt = $false
+    while ($true) {
+        $credential = Get-WindowsGuestCredential -ForcePrompt:$forceCredentialPrompt
+        if ($null -eq $credential) {
+            return
+        }
 
-    $partitions = Get-WindowsGuestPartitions -VM $VM -Credential $credential
+        try {
+            $partitions = Get-WindowsGuestPartitions -VM $VM -Credential $credential
+            break
+        }
+        catch {
+            # Retry only failed guest authentication during initial inventory.
+            # Do not replay partition changes or hide other guest/Tools failures.
+            $authenticationError = $_.Exception.ToString() + ' ' + $_.FullyQualifiedErrorId
+            if ($authenticationError -notmatch '(?i)Failed to authenticate with the guest operating system using the supplied credentials|InvalidGuestLogin') {
+                throw
+            }
+            Write-Warning 'Windows guest authentication failed. Enter the administrator username and password again, or enter exit to cancel.'
+            $credential = $null
+            $forceCredentialPrompt = $true
+        }
+    }
     Write-Host ''
     if (-not (Read-YesNo -Prompt 'Proceed to select a Windows partition for extension?')) {
         Write-Host ''
@@ -1280,16 +1301,9 @@ try {
         })
     Write-Host ''
 
-    while ($true) {
-        $confirmation = Read-ExitAwareInput -Prompt "To confirm, enter YES to expand '$($disk.Name)' on '$($vm.Name)'"
-        Stop-IfExitRequested
-
-        if ($confirmation -ceq 'YES') {
-            break
-        }
-
-        Write-Warning "The change has not been confirmed. Enter YES to proceed, or 'exit' to cancel."
-        Write-Host ''
+    if (-not (Read-YesNo -Prompt "Expand '$($disk.Name)' on '$($vm.Name)' to $newCapacityGB GB?")) {
+        Write-Host 'Disk expansion was cancelled. No changes were made.' -ForegroundColor Yellow
+        return
     }
     Write-Host ''
 
