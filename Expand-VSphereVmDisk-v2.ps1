@@ -125,7 +125,7 @@ function Write-EnhancedUiBanner {
     Write-Host '  vSphere Windows Disk Expansion Assistant - Version 2' -ForegroundColor Cyan
     Write-Host '  VMDK expansion | Guest partition analysis | Recovery handling' -ForegroundColor Gray
     Write-Host $line -ForegroundColor DarkCyan
-    Write-Host "Enter 'exit' at any text prompt to cancel.`n" -ForegroundColor DarkGray
+    Write-Host "Enter 'exit' at any text prompt to cancel." -ForegroundColor DarkGray
 }
 
 function Write-AlignedDetails {
@@ -353,6 +353,7 @@ function Get-VCenterConnection {
 
         if ([string]::IsNullOrWhiteSpace($serverName)) {
             Write-Warning 'A vCenter Server host name or IP address is required.'
+            Write-Host ''
         }
     }
 
@@ -398,6 +399,7 @@ function Select-ExactVM {
 
         if ([string]::IsNullOrWhiteSpace($candidateName)) {
             Write-Warning 'A VM name is required.'
+            Write-Host ''
             $candidateName = ''
             continue
         }
@@ -407,6 +409,7 @@ function Select-ExactVM {
             if ($initialNameWasSupplied) {
                 throw "VMName '$candidateName' cannot contain wildcard characters (*, ?, [, or ])."
             }
+            Write-Host ''
             $candidateName = ''
             continue
         }
@@ -422,6 +425,7 @@ function Select-ExactVM {
                 throw $message
             }
             Write-Warning $message
+            Write-Host ''
             $candidateName = ''
             continue
         }
@@ -445,6 +449,9 @@ function Select-ExactVM {
                 })
             Write-Host ''
             if (Read-YesNo -Prompt "Is '$($assignedVM.Name)' the correct VM?") {
+                if ($initialNameWasSupplied) {
+                    Write-Host ''
+                }
                 return $assignedVM
             }
 
@@ -452,6 +459,7 @@ function Select-ExactVM {
             if ($initialNameWasSupplied) {
                 throw $message
             }
+            Write-Host ''
             Write-Host "$message Enter another VM name." -ForegroundColor Yellow
             Write-Host ''
             $candidateName = ''
@@ -515,6 +523,7 @@ function Test-VMSnapshotPrerequisite {
 
     $snapshots = @(Get-Snapshot -VM $VM -Server $Server -ErrorAction Stop)
     if ($snapshots.Count -gt 0) {
+        Write-Host ''
         Write-Warning "VM '$($VM.Name)' has $($snapshots.Count) existing snapshot(s). Remove all snapshots and wait for removal to complete before adding disk space in vSphere. Then run this script again."
         Write-Host 'Disk expansion stopped. No disk capacity or Windows partition changes were made.' -ForegroundColor Yellow
         return $false
@@ -572,7 +581,8 @@ function Select-HardDisk {
             DatastoreFile              = $disks[$index].Filename
         }
     }
-    $diskList | Format-Table -AutoSize | Out-Host
+    # Keep the table's leading gap, but own its trailing spacing explicitly.
+    Write-Host (($diskList | Format-Table -AutoSize | Out-String).TrimEnd())
     Write-Host ''
 
     if ($PSBoundParameters.ContainsKey('InitialDiskNumber')) {
@@ -670,6 +680,7 @@ function Get-WindowsGuestCredential {
         return $credential
     }
     catch {
+        Write-Host ''
         Write-Warning 'Guest partition extension was cancelled. No guest partition was changed.'
         return $null
     }
@@ -787,7 +798,7 @@ function Select-WindowsGuestPartition {
     )
 
     Write-Host "`nWindows guest disks and partitions:" -ForegroundColor Cyan
-    $Partitions |
+    $partitionTable = $Partitions |
         Sort-Object DiskNumber, PartitionNumber |
         Select-Object DiskNumber,
             PartitionNumber,
@@ -798,7 +809,8 @@ function Select-WindowsGuestPartition {
             Type,
             IsRecovery |
         Format-Table -AutoSize |
-        Out-Host
+        Out-String
+    Write-Host ($partitionTable.TrimEnd())
     Write-Host ''
 
     while ($true) {
@@ -951,6 +963,7 @@ function Confirm-WindowsRecoveryPartitionDeletion {
         Stop-IfExitRequested
 
         if ($confirmation -ceq 'DELETE RECOVERY') {
+            Write-Host ''
             return $true
         }
 
@@ -985,6 +998,7 @@ function Confirm-WindowsBlockingPartitionDeletion {
         Stop-IfExitRequested
 
         if ($confirmation -ceq 'DELETE PARTITION') {
+            Write-Host ''
             return $true
         }
 
@@ -1211,6 +1225,7 @@ function Invoke-WindowsGuestPartitionExtension {
             if ($authenticationError -notmatch '(?i)Failed to authenticate with the guest operating system using the supplied credentials|InvalidGuestLogin') {
                 throw
             }
+            Write-Host ''
             Write-Warning 'Windows guest authentication failed. Enter the administrator username and password again, or enter exit to cancel.'
             $credential = $null
             $forceCredentialPrompt = $true
@@ -1224,6 +1239,7 @@ function Invoke-WindowsGuestPartitionExtension {
     }
 
     $partition = Select-WindowsGuestPartition -Partitions $partitions
+    Write-Host ''
     $extensionState = Get-WindowsPartitionExtensionState -VM $VM -Credential $credential -Partition $partition
     $following = $extensionState.FollowingPartition
 
@@ -1278,7 +1294,7 @@ function Invoke-WindowsGuestPartitionExtension {
 
 try {
     Write-EnhancedUiBanner
-    Write-EnhancedUiPhase -Progress $(if ($GuestOnly) { '1/2' } else { '1/4' }) -Title 'Connect to vCenter and select the VM'
+    Write-EnhancedUiPhase -Progress $(if ($GuestOnly) { '1/2' } else { '1/4' }) -Title 'Connect to vCenter and select the VM' -NoTrailingBlankLine
     $server = Get-VCenterConnection
     Write-VCenterConnectionDetails -Server $server
 
@@ -1304,7 +1320,7 @@ try {
         return
     }
 
-    Write-EnhancedUiPhase -Progress '2/4' -Title 'Select and expand the vSphere virtual disk'
+    Write-EnhancedUiPhase -Progress '2/4' -Title 'Select and expand the vSphere virtual disk' -NoTrailingBlankLine
     $diskArguments = @{ VM = $vm; Server = $server }
     if ($diskNumberWasSupplied) {
         $diskArguments.InitialDiskNumber = $DiskNumber
@@ -1334,16 +1350,16 @@ try {
     Write-Host ''
 
     if (-not (Read-YesNo -Prompt "Expand '$($disk.Name)' on '$($vm.Name)' to $newCapacityGB GB?")) {
+        Write-Host ''
         Write-Host 'Disk expansion was cancelled. No changes were made.' -ForegroundColor Yellow
         return
     }
-    Write-Host ''
-
     # A snapshot may have been created while the operator answered prompts.
     if (-not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
         return
     }
 
+    Write-Host ''
     Write-EnhancedUiStatus -Type Action -Message "Expanding $($disk.Name) to $newCapacityGB GB in vSphere..."
     Set-HardDisk -HardDisk $disk -CapacityGB $newCapacityGB -Confirm:$false -ErrorAction Stop | Out-Null
     $script:VmdkExpanded = $true
