@@ -21,6 +21,11 @@ If a Recovery or another partition follows the chosen partition, the script
 stops before extending it. You may explicitly authorize deletion of that
 adjacent blocking partition. Deleting a Recovery partition also disables WinRE.
 
+VMDK expansion stops if the VM has snapshots. Remove the snapshots and wait
+for removal to complete before running the script again. The script checks
+before disk selection and again immediately before expansion; it does not
+remove snapshots. GuestOnly mode skips this vSphere expansion check.
+
 .PARAMETER VIServer
 Optional vCenter Server name. If omitted, the active default PowerCLI
 connection is used when exactly one is available; otherwise the script prompts
@@ -497,6 +502,25 @@ function Get-HardDiskDatastoreSpace {
         FreeSpaceGB        = [math]::Round($freeSpaceGB, 2)
         ProvisionedSpaceGB = [math]::Round($usedSpaceGB + $uncommittedSpaceGB, 2)
     }
+}
+
+function Test-VMSnapshotPrerequisite {
+    param(
+        [Parameter(Mandatory)]
+        [object]$VM,
+
+        [Parameter(Mandatory)]
+        [object]$Server
+    )
+
+    $snapshots = @(Get-Snapshot -VM $VM -Server $Server -ErrorAction Stop)
+    if ($snapshots.Count -gt 0) {
+        Write-Warning "VM '$($VM.Name)' has $($snapshots.Count) existing snapshot(s). Remove all snapshots and wait for removal to complete before adding disk space in vSphere. Then run this script again."
+        Write-Host 'Disk expansion stopped. No disk capacity or Windows partition changes were made.' -ForegroundColor Yellow
+        return $false
+    }
+
+    return $true
 }
 
 function Select-HardDisk {
@@ -1276,6 +1300,10 @@ try {
         return
     }
 
+    if (-not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
+        return
+    }
+
     Write-EnhancedUiPhase -Progress '2/4' -Title 'Select and expand the vSphere virtual disk'
     $diskArguments = @{ VM = $vm; Server = $server }
     if ($diskNumberWasSupplied) {
@@ -1310,6 +1338,11 @@ try {
         return
     }
     Write-Host ''
+
+    # A snapshot may have been created while the operator answered prompts.
+    if (-not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
+        return
+    }
 
     Write-EnhancedUiStatus -Type Action -Message "Expanding $($disk.Name) to $newCapacityGB GB in vSphere..."
     Set-HardDisk -HardDisk $disk -CapacityGB $newCapacityGB -Confirm:$false -ErrorAction Stop | Out-Null
