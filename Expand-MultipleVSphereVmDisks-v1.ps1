@@ -684,8 +684,8 @@ function New-Result {
 try {
     Write-Host "`nMulti-VM Windows Disk Expansion - Version 1" -ForegroundColor Cyan
     Write-Host ('=' * 72) -ForegroundColor DarkCyan
-    Write-Host ''
     if ($AllowRecoveryPartitionDeletion) {
+        Write-Host ''
         Write-Warning 'Recovery partition deletion is enabled for this run. WinRE will be disabled and the Recovery partition will not be recreated.'
     }
 
@@ -735,13 +735,14 @@ try {
 
     Write-Host "`nResolved VM targets ($($items.Count)):" -ForegroundColor Cyan
     if ($items.Count -gt 0) {
-        $items |
+        $targetsTable = $items |
             Sort-Object VMName, DriveLetter |
             Select-Object VMName,
                 @{ Name = 'Drive'; Expression = { "$($_.DriveLetter):" } },
                 TargetCapacityGB |
             Format-Table -AutoSize |
-            Out-Host
+            Out-String
+        Write-Host ($targetsTable.TrimEnd())
         Write-Host ''
         Write-Host 'These VMs will now enter preflight. No per-VM approval will be requested.' -ForegroundColor DarkGray
     }
@@ -810,7 +811,7 @@ try {
         })
     if ($planDisplay.Count -gt 0) {
         Write-Host "`nExecution plan (no per-VM approval will be requested):" -ForegroundColor Cyan
-        $planDisplay | Format-Table -AutoSize -Wrap | Out-Host
+        Write-Host (($planDisplay | Format-Table -AutoSize -Wrap | Out-String).TrimEnd())
     }
 
     foreach ($plan in $plans) {
@@ -887,7 +888,7 @@ try {
 
     $results = @($results | Sort-Object VMName, DriveLetter)
     Write-Host "`nBatch results:" -ForegroundColor Cyan
-    $results | Format-Table VMName, DriveLetter, TargetCapacityGB, HardDisk, VmdkBeforeGB, VmdkAfterGB, PartitionBeforeGB, PartitionAfterGB, RecoveryDeleted, Outcome, Message -AutoSize -Wrap | Out-Host
+    Write-Host (($results | Format-Table VMName, DriveLetter, TargetCapacityGB, HardDisk, VmdkBeforeGB, VmdkAfterGB, PartitionBeforeGB, PartitionAfterGB, RecoveryDeleted, Outcome, Message -AutoSize -Wrap | Out-String).TrimEnd())
 
     if (-not [string]::IsNullOrWhiteSpace($CsvReportPath)) {
         Write-Host ''

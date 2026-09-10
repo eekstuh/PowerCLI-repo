@@ -496,10 +496,11 @@ try {
         Write-Warning 'No link-up vmnics were returned from the selected ESXi hosts.'
     }
     else {
-        $report |
+        $reportTable = $report |
             Select-Object Cluster, ESXiHost, Vmnic, Link, SpeedMbps, vSphereSwitch, PhysicalSwitch, SwitchPort, Protocol |
             Format-Table -AutoSize -Wrap |
-            Out-Host
+            Out-String
+        Write-Host ($reportTable.TrimEnd())
     }
     Write-Host ''
 

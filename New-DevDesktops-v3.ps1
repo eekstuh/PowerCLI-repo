@@ -209,7 +209,6 @@ function Read-VmNamePrefix {
     }
 
     while ($true) {
-        Write-Host ''
         Write-Host 'Select a virtual machine naming convention:' -ForegroundColor Cyan
         Write-Host ''
         Write-Host '  1. 11VMGC'
@@ -478,8 +477,7 @@ for ($index = 0; $index -lt $vmNames.Count; $index++) {
             Write-Host $_.Exception.InnerException.Message -ForegroundColor Yellow
         }
 
-        Write-Host ""
-        $_ | Format-List * -Force | Out-String | Write-Host
+        Write-Host (($_ | Format-List * -Force | Out-String).TrimEnd())
         Write-Host "----------------------------------------"
     }
 }

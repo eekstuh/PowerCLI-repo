@@ -239,6 +239,7 @@ function Get-VCenterConnection {
 
         if ([string]::IsNullOrWhiteSpace($serverName)) {
             Write-Warning 'A vCenter Server host name or IP address is required.'
+            Write-Host ''
         }
     }
 
@@ -290,11 +291,13 @@ function Select-ExactVM {
 
         if ([string]::IsNullOrWhiteSpace($vmName)) {
             Write-Warning 'A VM name is required.'
+            Write-Host ''
             continue
         }
 
         if ($vmName.IndexOfAny([char[]]'*?[]') -ge 0) {
             Write-Warning 'Wildcards are not allowed. Enter the VM name exactly.'
+            Write-Host ''
             continue
         }
 
@@ -303,6 +306,7 @@ function Select-ExactVM {
         switch ($matches.Count) {
             0 {
                 Write-Warning "No VM named '$vmName' was found on $($Server.Name)."
+                Write-Host ''
                 continue
             }
             1 {
@@ -310,6 +314,7 @@ function Select-ExactVM {
             }
             default {
                 Write-Warning "More than one VM is named '$vmName'. Use a unique VM name before running this script."
+                Write-Host ''
                 continue
             }
         }
@@ -343,7 +348,7 @@ function Select-HardDisk {
             Persistence  = $disks[$index].Persistence
         }
     }
-    $diskList | Format-Table -AutoSize | Out-Host
+    Write-Host (($diskList | Format-Table -AutoSize | Out-String).TrimEnd())
     Write-Host ''
 
     if ($PSBoundParameters.ContainsKey('InitialDiskNumber')) {
@@ -439,6 +444,7 @@ function Get-WindowsGuestCredential {
         return $credential
     }
     catch {
+        Write-Host ''
         Write-Warning 'Guest partition extension was cancelled. No guest partition was changed.'
         return $null
     }
@@ -556,7 +562,7 @@ function Select-WindowsGuestPartition {
     )
 
     Write-Host "`nWindows guest disks and partitions:" -ForegroundColor Cyan
-    $Partitions |
+    $partitionTable = $Partitions |
         Sort-Object DiskNumber, PartitionNumber |
         Select-Object DiskNumber,
             PartitionNumber,
@@ -567,7 +573,8 @@ function Select-WindowsGuestPartition {
             Type,
             IsRecovery |
         Format-Table -AutoSize |
-        Out-Host
+        Out-String
+    Write-Host ($partitionTable.TrimEnd())
     Write-Host ''
 
     while ($true) {
@@ -720,6 +727,7 @@ function Confirm-WindowsRecoveryPartitionDeletion {
         Stop-IfExitRequested
 
         if ($confirmation -ceq 'DELETE RECOVERY') {
+            Write-Host ''
             return $true
         }
 
@@ -754,6 +762,7 @@ function Confirm-WindowsBlockingPartitionDeletion {
         Stop-IfExitRequested
 
         if ($confirmation -ceq 'DELETE PARTITION') {
+            Write-Host ''
             return $true
         }
 
@@ -976,6 +985,7 @@ function Invoke-WindowsGuestPartitionExtension {
     }
 
     $partition = Select-WindowsGuestPartition -Partitions $partitions
+    Write-Host ''
     $extensionState = Get-WindowsPartitionExtensionState -VM $VM -Credential $credential -Partition $partition
     $following = $extensionState.FollowingPartition
 

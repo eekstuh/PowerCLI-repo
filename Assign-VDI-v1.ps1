@@ -163,7 +163,7 @@ function Write-Banner {
     Write-Host "`n$line" -ForegroundColor DarkCyan
     Write-Host '  VDI Assignment Assistant - Version 1.0' -ForegroundColor Cyan
     Write-Host $line -ForegroundColor DarkCyan
-    Write-Host "Enter 'exit' at any text prompt to cancel.`n" -ForegroundColor DarkGray
+    Write-Host "Enter 'exit' at any text prompt to cancel." -ForegroundColor DarkGray
 }
 
 function Write-AlignedDetails {
@@ -857,6 +857,7 @@ function Confirm-DuplicateUserAssignment {
     Write-Host ''
     $confirmed = Read-YesNo -Prompt "Are you sure you want to assign another VDI to '$FullName'?"
     if ($confirmed) {
+        Write-Host ''
         Write-Host "Duplicate VDI assignment authorized for '$FullName'." -ForegroundColor Yellow
     }
 
@@ -982,6 +983,7 @@ function Select-AssignmentVM {
             }
         }
 
+        Write-Host ''
         Write-Host "Skipped '$($vm.Name)'. Evaluating the next candidate." -ForegroundColor Yellow
     }
 
@@ -1076,6 +1078,7 @@ function Select-SpecificAssignmentVM {
         if (-not $AllowNameCorrection) {
             return $null
         }
+        Write-Host ''
         Write-Host "Skipped '$($vm.Name)'." -ForegroundColor Yellow
         Write-Host ''
         $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact VM name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
@@ -1254,6 +1257,7 @@ function Select-ExistingAssignmentVM {
         if (-not $AllowNameCorrection) {
             return $null
         }
+        Write-Host ''
         Write-Host "Skipped '$($vm.Name)'." -ForegroundColor Yellow
         Write-Host ''
         $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt "Enter another assigned VM name; the assigned user's name is optional" -FieldName 'Virtual machine name'
@@ -1461,6 +1465,7 @@ function Add-GuestRemoteDesktopUserWithCorrection {
 
             $unresolvedAccount = $accountNotFoundMatch.Groups['Account'].Value
             Write-Warning "Active Directory account '$unresolvedAccount' could not be found. The VM has not been renamed."
+            Write-Host ''
             while ($true) {
                 $correctedAccount = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt "Enter the correct Active Directory account for '$($VM.Name)'" -FieldName 'Active Directory account name'
                 try {
@@ -1468,11 +1473,13 @@ function Add-GuestRemoteDesktopUserWithCorrection {
                 }
                 catch {
                     Write-Warning $_.Exception.Message
+                    Write-Host ''
                     continue
                 }
 
                 if ([string]$correctedADUser.SID -ne $ExpectedADUserSID) {
                     Write-Warning "The corrected account belongs to '$($correctedADUser.FullName)', not the selected Active Directory user. Enter another account for the same user."
+                    Write-Host ''
                     continue
                 }
 
@@ -1706,6 +1713,7 @@ try {
                 $vmNameWasSupplied = $false
                 $adAccountWasSupplied = $false
                 Write-Banner
+                Write-Host ''
                 Write-Host "Continuing with vCenter Server '$($server.Name)' and cluster '$($cluster.Name)'." -ForegroundColor Green
             }
         }
@@ -1715,14 +1723,15 @@ try {
     }
 
     Write-Host "`nAssignment results:" -ForegroundColor Cyan
-    $results |
+    $resultsTable = $results |
         Format-Table CsvRow, User, Consultant, VMName, ResolvedADAccount, Outcome -AutoSize -Wrap |
-        Out-Host
+        Out-String
+    Write-Host ($resultsTable.TrimEnd())
 
     $failedResults = @($results | Where-Object { $_.Outcome -in @('InputFailed', 'Failed') })
     if ($failedResults.Count -gt 0) {
         Write-Host "`nFailure details:" -ForegroundColor Yellow
-        $failedResults | Select-Object CsvRow, NamingConvention, RequestedVMName, User, Consultant, ConsultantOU, RequestedADAccount, Outcome, Message | Format-List | Out-Host
+        Write-Host (($failedResults | Select-Object CsvRow, NamingConvention, RequestedVMName, User, Consultant, ConsultantOU, RequestedADAccount, Outcome, Message | Format-List | Out-String).TrimEnd())
         throw "$($failedResults.Count) assignment(s) failed. Review the results above."
     }
 }

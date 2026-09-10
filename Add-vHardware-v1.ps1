@@ -187,7 +187,7 @@ function Write-Banner {
     Write-Host '  vSphere VM Hardware Assistant - Version 1' -ForegroundColor Cyan
     Write-Host '  Add vCPU | Add/remove memory | Add a uniquely named virtual disk' -ForegroundColor Gray
     Write-Host $line -ForegroundColor DarkCyan
-    Write-Host "Enter 'exit' at any text prompt to cancel.`n" -ForegroundColor DarkGray
+    Write-Host "Enter 'exit' at any text prompt to cancel." -ForegroundColor DarkGray
 }
 
 function Write-AlignedDetails {
@@ -494,7 +494,6 @@ function Read-TargetCpuCount {
         }
 
         Write-Warning "Choose one of these totals: $($availableCpuCounts -join ', ')."
-        Write-Host ''
     }
 }
 
@@ -745,7 +744,7 @@ function Select-Datastore {
             Type        = $Datastores[$index].Type
         }
     }
-    $display | Format-Table -AutoSize | Out-Host
+    Write-Host (($display | Format-Table -AutoSize | Out-String).TrimEnd())
     Write-Host ''
 
     while ($true) {
@@ -915,10 +914,11 @@ function Select-ScsiController {
     $controllers = @(Get-ScsiControllerInventory -VMView $vmView)
 
     Write-Host "`nSCSI controllers and attached virtual disks:" -ForegroundColor Cyan
-    $controllers |
+    $controllerTable = $controllers |
         Select-Object Choice, Controller, Type, FreeSlots, @{ Name = 'AttachedDisks'; Expression = { $_.AttachmentSummary } } |
         Format-Table -AutoSize -Wrap |
-        Out-Host
+        Out-String
+    Write-Host ($controllerTable.TrimEnd())
     Write-Host ''
 
     while ($true) {
@@ -1136,7 +1136,7 @@ function Show-ExistingDisks {
             BackingFile   = Get-VmdkFileName -DatastorePath ([string]$hardDisks[$index].Filename)
         }
     }
-    $display | Format-Table -AutoSize | Out-Host
+    Write-Host (($display | Format-Table -AutoSize | Out-String).TrimEnd())
     return $hardDisks
 }
 
