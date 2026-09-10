@@ -6,10 +6,13 @@
 Expands one existing virtual disk on a vSphere VM with an enhanced Version 2 console interface.
 
 .DESCRIPTION
-Prompts for an exact VM name, a disk number, and an amount to add in GB unless
-those values are supplied as parameters. VM name wildcard characters (*, ?, [, ])
-are rejected. Enter 'exit' at any script prompt to cancel the remaining workflow; before confirmation it
-makes no changes, and after VMDK expansion it prevents further guest changes.
+Prompts for a VM name, a disk number, and an amount to add in GB unless those
+values are supplied as parameters. If the entered VM name is not found exactly,
+the script searches for a uniquely matching assigned name in the form
+'EnteredName - Assigned User' and requires confirmation before using it. VM name
+wildcard characters (*, ?, [, ]) are rejected. Enter 'exit' at any script prompt
+to cancel the remaining workflow; before confirmation it makes no changes, and
+after VMDK expansion it prevents further guest changes.
 
 This script expands the VMDK only.  It does not extend a Windows partition or
 volume inside the guest OS unless you opt in after the VMDK expansion. The
@@ -27,7 +30,9 @@ for a vCenter Server.
 Optional credential passed to Connect-VIServer when a new connection is needed.
 
 .PARAMETER VMName
-Optional exact VM name. Wildcard characters are not permitted.
+Optional VM name. If it is not found exactly and one assigned VM matches the
+name followed by ' - Assigned User', the script displays that VM and asks for
+confirmation. Wildcard characters are not permitted.
 
 .PARAMETER DiskNumber
 Optional disk number from the disk list displayed for the selected VM.
@@ -371,46 +376,91 @@ function Select-ExactVM {
     )
 
     $allVMs = @(Get-VM -Server $Server -ErrorAction Stop)
-
-    if ($PSBoundParameters.ContainsKey('InitialVMName')) {
-        # Do not use Get-VM -Name here: its -Name parameter supports wildcards.
-        $matches = @($allVMs | Where-Object { $_.Name -ieq $InitialVMName })
-        switch ($matches.Count) {
-            0 { throw "No VM named '$InitialVMName' was found on $($Server.Name)." }
-            1 { return $matches[0] }
-            default { throw "More than one VM is named '$InitialVMName'. Use a unique VM name." }
-        }
-    }
+    $initialNameWasSupplied = $PSBoundParameters.ContainsKey('InitialVMName')
+    $candidateName = if ($initialNameWasSupplied) { ([string]$InitialVMName).Trim() } else { '' }
 
     while ($true) {
-        $vmName = Read-ExitAwareInput -Prompt 'Enter VM name'
-        Stop-IfExitRequested
+        if ([string]::IsNullOrWhiteSpace($candidateName)) {
+            $candidateName = Read-ExitAwareInput -Prompt 'Enter VM name'
+            Stop-IfExitRequested
+        }
 
-        if ([string]::IsNullOrWhiteSpace($vmName)) {
+        if ([string]::IsNullOrWhiteSpace($candidateName)) {
             Write-Warning 'A VM name is required.'
+            $candidateName = ''
             continue
         }
 
-        if ($vmName.IndexOfAny([char[]]'*?[]') -ge 0) {
+        if ($candidateName.IndexOfAny([char[]]'*?[]') -ge 0) {
             Write-Warning 'Wildcards are not allowed. Enter the VM name exactly.'
+            if ($initialNameWasSupplied) {
+                throw "VMName '$candidateName' cannot contain wildcard characters (*, ?, [, or ])."
+            }
+            $candidateName = ''
             continue
         }
 
         # Do not use Get-VM -Name here: its -Name parameter supports wildcards.
-        $matches = @($allVMs | Where-Object { $_.Name -ieq $vmName })
-        switch ($matches.Count) {
-            0 {
-                Write-Warning "No VM named '$vmName' was found on $($Server.Name)."
-                continue
-            }
-            1 {
-                return $matches[0]
-            }
-            default {
-                Write-Warning "More than one VM is named '$vmName'. Use a unique VM name before running this script."
-                continue
-            }
+        $exactMatches = @($allVMs | Where-Object { $_.Name -ieq $candidateName })
+        if ($exactMatches.Count -eq 1) {
+            return $exactMatches[0]
         }
+        if ($exactMatches.Count -gt 1) {
+            $message = "More than one VM is named '$candidateName'. Use a unique VM name before running this script."
+            if ($initialNameWasSupplied) {
+                throw $message
+            }
+            Write-Warning $message
+            $candidateName = ''
+            continue
+        }
+
+        Write-Warning "VM '$candidateName' was not found by exact name on vCenter Server '$($Server.Name)'."
+        Write-Host "Searching for an assigned VM matching '$candidateName - <assigned user>'..." -ForegroundColor Cyan
+
+        $escapedBaseName = [regex]::Escape($candidateName)
+        $assignedMatches = @(
+            $allVMs |
+                Where-Object { $_.Name -imatch "^$escapedBaseName\s+-\s+.+$" } |
+                Sort-Object Name
+        )
+
+        if ($assignedMatches.Count -eq 1) {
+            $assignedVM = $assignedMatches[0]
+            Write-Host "`nAssigned VM found:" -ForegroundColor Cyan
+            Write-AlignedDetails -Details ([ordered]@{
+                    'Entered VM name'  = $candidateName
+                    'Assigned VM name' = $assignedVM.Name
+                })
+            Write-Host ''
+            if (Read-YesNo -Prompt "Is '$($assignedVM.Name)' the correct VM?") {
+                return $assignedVM
+            }
+
+            $message = "Assigned VM '$($assignedVM.Name)' was not confirmed."
+            if ($initialNameWasSupplied) {
+                throw $message
+            }
+            Write-Host "$message Enter another VM name." -ForegroundColor Yellow
+            Write-Host ''
+            $candidateName = ''
+            continue
+        }
+
+        if ($assignedMatches.Count -gt 1) {
+            $matchingNames = @($assignedMatches.Name)
+            $message = "More than one assigned VM matches base name '$candidateName': $($matchingNames -join ', '). Enter the complete assigned VM name."
+        }
+        else {
+            $message = "No assigned VM matching '$candidateName - <assigned user>' was found on vCenter Server '$($Server.Name)'."
+        }
+
+        if ($initialNameWasSupplied) {
+            throw $message
+        }
+        Write-Warning $message
+        Write-Host ''
+        $candidateName = ''
     }
 }
 
