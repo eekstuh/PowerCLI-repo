@@ -422,7 +422,7 @@ function Select-ExactVM {
         }
 
         Write-Warning "VM '$candidateName' was not found by exact name on vCenter Server '$($Server.Name)'."
-        Write-Host "Searching for an assigned VM matching '$candidateName - <assigned user>'..." -ForegroundColor Cyan
+        Write-Host 'Searching for an assigned VM name...' -ForegroundColor Cyan
 
         $escapedBaseName = [regex]::Escape($candidateName)
         $assignedMatches = @(
