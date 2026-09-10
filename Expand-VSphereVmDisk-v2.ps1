@@ -199,7 +199,9 @@ function Write-EnhancedUiPhase {
         [string]$Progress,
 
         [Parameter(Mandatory)]
-        [string]$Title
+        [string]$Title,
+
+        [switch]$NoTrailingBlankLine
     )
 
     if (-not $EnhancedUI) {
@@ -208,7 +210,9 @@ function Write-EnhancedUiPhase {
 
     Write-Host "`n[$Progress] $Title" -ForegroundColor Cyan
     Write-Host ('-' * 72) -ForegroundColor DarkGray
-    Write-Host ''
+    if (-not $NoTrailingBlankLine) {
+        Write-Host ''
+    }
 }
 
 function Write-EnhancedUiStatus {
@@ -255,7 +259,7 @@ function Write-EnhancedUiSummary {
         return
     }
 
-    Write-EnhancedUiPhase -Progress $Progress -Title 'Operation summary'
+    Write-EnhancedUiPhase -Progress $Progress -Title 'Operation summary' -NoTrailingBlankLine
     $summaryDetails = [ordered]@{ 'VM' = $SelectedVM }
     $summaryColors = @{}
     if (-not [string]::IsNullOrWhiteSpace($SelectedDisk)) {
