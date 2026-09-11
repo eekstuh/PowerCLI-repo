@@ -9,7 +9,9 @@ Expands one existing virtual disk on a vSphere VM with an enhanced Version 3 con
 Automatically selects the workflow from the guest OS name reported by VMware Tools.
 Windows Server guests use the SQL volume-label workflow; Windows desktop guests
 use the general Windows workflow. VM names do not determine the workflow.
-Missing or unrecognized guest OS information stops the workflow before disk changes.
+Missing or unrecognized guest OS information prevents that VM from continuing.
+If VMware Tools is not running or cannot report a supported Windows OS, the script
+warns the operator and returns to the VM name prompt.
 SQL mode retrieves and maps Windows volume labels before disk selection and reuses
 the guest credentials for partition extension. Failed guest inventory stops the
 workflow before expansion. Missing per-disk mappings or labels are displayed as
@@ -673,6 +675,69 @@ function Get-DiskExpansionWorkflow {
     if ($GuestOSName -match '(?i)\bServer\b') { return 'SQL' }
     if ($GuestOSName -match '(?i)\bWindows\s+(?:11|10|8(?:\.1)?|7|Vista|XP)\b') { return 'Windows' }
     throw "Cannot determine whether guest OS '$GuestOSName' is Windows Server or desktop. Verify the OS information reported by VMware Tools."
+}
+
+function Select-VMWithGuestWorkflow {
+    param(
+        [Parameter(Mandatory)]
+        [object]$Server,
+
+        [Parameter()]
+        [string]$InitialVMName
+    )
+
+    $useInitialVMName = $PSBoundParameters.ContainsKey('InitialVMName')
+    while ($true) {
+        $vmArguments = @{ Server = $Server }
+        if ($useInitialVMName) {
+            $vmArguments.InitialVMName = $InitialVMName
+        }
+
+        $selectedVM = Select-ExactVM @vmArguments
+        if (-not $useInitialVMName) {
+            Write-Host ''
+        }
+        Write-EnhancedUiStatus -Type Success -Message "Selected VM '$($selectedVM.Name)'."
+
+        try {
+            $selectedVM.ExtensionData.UpdateViewData('Guest')
+        }
+        catch {
+            Write-Warning "Could not retrieve VMware Tools guest information for VM '$($selectedVM.Name)': $($_.Exception.Message)"
+            Write-Host 'No changes were made. Enter another VM name.' -ForegroundColor Yellow
+            Write-Host ''
+            $useInitialVMName = $false
+            continue
+        }
+
+        $toolsRunningStatus = [string]$selectedVM.ExtensionData.Guest.ToolsRunningStatus
+        if ($toolsRunningStatus -notin @('guestToolsRunning', 'guestToolsExecutingScripts')) {
+            $displayStatus = if ([string]::IsNullOrWhiteSpace($toolsRunningStatus)) { 'not reported' } else { $toolsRunningStatus }
+            Write-Warning "VMware Tools is not running on VM '$($selectedVM.Name)' (status: $displayStatus)."
+            Write-Host 'No changes were made. Enter another VM name.' -ForegroundColor Yellow
+            Write-Host ''
+            $useInitialVMName = $false
+            continue
+        }
+
+        $guestOSName = [string]$selectedVM.ExtensionData.Guest.GuestFullName
+        try {
+            $workflow = Get-DiskExpansionWorkflow -GuestOSName $guestOSName
+        }
+        catch {
+            Write-Warning $_.Exception.Message
+            Write-Host 'No changes were made. Enter another VM name.' -ForegroundColor Yellow
+            Write-Host ''
+            $useInitialVMName = $false
+            continue
+        }
+
+        return [pscustomobject]@{
+            VM          = $selectedVM
+            GuestOSName = $guestOSName
+            Workflow    = $workflow
+        }
+    }
 }
 
 function Get-CombinedGuestVolumeLabelMap {
@@ -1584,23 +1649,19 @@ try {
     $server = Get-VCenterConnection
     Write-VCenterConnectionDetails -Server $server
 
-    $vmArguments = @{ Server = $server }
+    $selectionArguments = @{ Server = $server }
     if ($vmNameWasSupplied) {
-        $vmArguments.InitialVMName = $VMName
+        $selectionArguments.InitialVMName = $VMName
     }
-    $vm = Select-ExactVM @vmArguments
-    if (-not $vmNameWasSupplied) {
-        Write-Host ''
-    }
-    Write-EnhancedUiStatus -Type Success -Message "Selected VM '$($vm.Name)'."
+    $vmSelection = Select-VMWithGuestWorkflow @selectionArguments
+    $vm = $vmSelection.VM
+    $guestOSName = $vmSelection.GuestOSName
+    $workflow = $vmSelection.Workflow
 
     if (-not $GuestOnly -and -not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
         return
     }
 
-    $vm.ExtensionData.UpdateViewData('Guest')
-    $guestOSName = [string]$vm.ExtensionData.Guest.GuestFullName
-    $workflow = Get-DiskExpansionWorkflow -GuestOSName $guestOSName
     Write-AlignedDetails -Details ([ordered]@{
             'Guest OS' = $guestOSName
             'Workflow' = $(if ($workflow -eq 'SQL') { 'Windows Server (SQL workflow)' } else { 'General Windows' })
