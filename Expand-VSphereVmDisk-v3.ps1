@@ -11,8 +11,9 @@ Windows Server guests use the SQL volume-label workflow; Windows desktop guests
 use the general Windows workflow. VM names do not determine the workflow.
 Missing or unrecognized guest OS information stops the workflow before disk changes.
 SQL mode retrieves and maps Windows volume labels before disk selection and reuses
-the guest credentials for partition extension. Failed inventory or disk mapping
-stops the workflow before expansion. Both workflows retain snapshot checks,
+the guest credentials for partition extension. Failed guest inventory stops the
+workflow before expansion. Missing per-disk mappings or labels are displayed as
+unavailable; disk and Windows partition selection remain manual. Both workflows retain snapshot checks,
 assigned-name lookup, authentication retry, and explicit mutation confirmations.
 Only the SQL workflow disk list includes GuestVolumeFreeGB from the latest VMware Tools report.
 Multiple mapped volumes are listed separately by path. Missing mapping or free-space
@@ -589,6 +590,7 @@ function Get-GuestVolumeDisplayForHardDisk {
         $guestDisks = @(Get-VMGuestDisk -HardDisk $HardDisk -ErrorAction Stop)
     }
     catch {
+        Write-Warning "Could not retrieve guest volume mapping for '$($HardDisk.Name)': $($_.Exception.Message)"
         return 'Unavailable'
     }
 
@@ -796,9 +798,6 @@ function Select-HardDisk {
         }
         if ($IncludeGuestVolumes) {
             $display = Get-GuestVolumeDisplayForHardDisk -HardDisk $disks[$index] -VolumeLabelsByPath $VolumeLabelsByPath
-            if ($display -match 'Unavailable|No mapped volume') {
-                throw "Guest volume mapping is unavailable for '$($disks[$index].Name)'. Verify VMware Tools disk mapping before continuing."
-            }
             $row['GuestVolumes'] = $display
         }
         $row['HardDiskCapacityGB'] = [decimal]$disks[$index].CapacityGB
