@@ -27,6 +27,8 @@ values are supplied as parameters. If an entered name starting with 11VMDEV,
 wildcard characters (*, ?, [, ]) are rejected. Enter 'exit' at any script prompt
 to cancel the remaining workflow; before confirmation it makes no changes, and
 after VMDK expansion it prevents further guest changes.
+In the General Windows workflow, enter 'skip' at the capacity prompt to leave
+the VMDK unchanged and proceed directly to Windows partition expansion.
 
 This script expands the VMDK only.  It does not extend a Windows partition or
 volume inside the guest OS unless you opt in after the VMDK expansion. The
@@ -272,7 +274,10 @@ function Write-EnhancedUiSummary {
         [Nullable[decimal]]$OldCapacityGB,
 
         [Parameter()]
-        [Nullable[decimal]]$NewCapacityGB
+        [Nullable[decimal]]$NewCapacityGB,
+
+        [Parameter()]
+        [switch]$VmdkSkipped
     )
 
     if (-not $EnhancedUI) {
@@ -287,6 +292,9 @@ function Write-EnhancedUiSummary {
     }
     if ($null -ne $OldCapacityGB -and $null -ne $NewCapacityGB) {
         $summaryDetails['vSphere capacity'] = "$OldCapacityGB GB -> $NewCapacityGB GB"
+    }
+    elseif ($VmdkSkipped) {
+        $summaryDetails['vSphere capacity'] = 'Skipped by operator'
     }
     elseif ($GuestOnly) {
         $summaryDetails['vSphere capacity'] = 'Skipped (GuestOnly mode)'
@@ -848,7 +856,10 @@ function Select-HardDisk {
 function Read-AdditionalCapacityGB {
     param(
         [Parameter()]
-        [decimal]$InitialAdditionalGB
+        [decimal]$InitialAdditionalGB,
+
+        [Parameter()]
+        [switch]$AllowSkip
     )
 
     if ($PSBoundParameters.ContainsKey('InitialAdditionalGB')) {
@@ -857,8 +868,18 @@ function Read-AdditionalCapacityGB {
 
     Write-Host ''
     while ($true) {
-        $inputValue = Read-ExitAwareInput -Prompt 'Enter the capacity to add, in GB'
+        $prompt = if ($AllowSkip) {
+            "Enter the capacity to add, in GB, or enter 'skip' to proceed to Windows partition expansion"
+        }
+        else {
+            'Enter the capacity to add, in GB'
+        }
+        $inputValue = Read-ExitAwareInput -Prompt $prompt
         Stop-IfExitRequested
+
+        if ($AllowSkip -and $inputValue -ieq 'skip') {
+            return $null
+        }
 
         [decimal]$additionalGB = 0
         if (-not [decimal]::TryParse(
@@ -867,7 +888,11 @@ function Read-AdditionalCapacityGB {
                 [System.Globalization.CultureInfo]::CurrentCulture,
                 [ref]$additionalGB
             ) -or $additionalGB -le 0) {
-            Write-Warning 'Enter a positive number of GB, for example 50 or 25.5.'
+            $message = 'Enter a positive number of GB, for example 50 or 25.5.'
+            if ($AllowSkip) {
+                $message += " Enter 'skip' to proceed without changing the VMDK."
+            }
+            Write-Warning $message
             Write-Host ''
             continue
         }
@@ -1569,7 +1594,7 @@ try {
         return
     }
 
-    if (-not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
+    if ($workflow -eq 'SQL' -and -not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
         return
     }
 
@@ -1592,7 +1617,23 @@ try {
     if ($sizeWasSupplied) {
         $capacityArguments.InitialAdditionalGB = $GBSizeToIncrease
     }
+    if ($workflow -eq 'Windows') {
+        $capacityArguments.AllowSkip = $true
+    }
     $additionalGB = Read-AdditionalCapacityGB @capacityArguments
+
+    if ($null -eq $additionalGB) {
+        Write-Host ''
+        Write-EnhancedUiStatus -Type Info -Message "vSphere capacity expansion was skipped for '$($disk.Name)'."
+        Write-EnhancedUiPhase -Progress '3/4' -Title 'Windows guest partition extension'
+        Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation
+        Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '4/4' -SelectedDisk $disk.Name -VmdkSkipped
+        return
+    }
+
+    if (-not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
+        return
+    }
 
     [decimal]$currentCapacityGB = $disk.CapacityGB
     [decimal]$newCapacityGB = $currentCapacityGB + $additionalGB
