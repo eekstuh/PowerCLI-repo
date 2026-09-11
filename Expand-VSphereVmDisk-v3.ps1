@@ -1474,11 +1474,13 @@ function Invoke-WindowsGuestPartitionExtension {
             $forceCredentialPrompt = $true
         }
     }
-    Write-Host ''
-    if (-not $SkipPartitionSelectionConfirmation -and -not (Read-YesNo -Prompt 'Proceed to select a Windows partition for extension?')) {
+    if (-not $SkipPartitionSelectionConfirmation) {
         Write-Host ''
-        Write-Host 'No guest partition was changed.' -ForegroundColor Yellow
-        return
+        if (-not (Read-YesNo -Prompt 'Proceed to select a Windows partition for extension?')) {
+            Write-Host ''
+            Write-Host 'No guest partition was changed.' -ForegroundColor Yellow
+            return
+        }
     }
 
     $partition = Select-WindowsGuestPartition -Partitions $partitions
