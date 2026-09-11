@@ -6,10 +6,10 @@
 Expands one existing virtual disk on a vSphere VM with an enhanced Version 3 console interface.
 
 .DESCRIPTION
-Automatically selects the workflow from the guest OS name reported by VMware Tools.
-Windows Server guests use the SQL volume-label workflow; other Windows guests use
-the general Windows workflow. VM names do not affect workflow selection. Missing
-guest OS information or a non-Windows guest stops the workflow before disk changes.
+Automatically selects the workflow from the resolved VM name, case-insensitively.
+Names starting with 11VMDEV, 11VMGC, or 11VMHIV use the general Windows workflow.
+Other names containing SQL or GC use the SQL volume-label workflow. All remaining
+names use the general Windows workflow. Prefix rules take precedence.
 SQL mode retrieves and maps Windows volume labels before disk selection and reuses
 the guest credentials for partition extension. Failed inventory or disk mapping
 stops the workflow before expansion. Both workflows retain snapshot checks,
@@ -606,15 +606,11 @@ function Get-GuestVolumeDisplayForHardDisk {
 }
 
 function Get-DiskExpansionWorkflow {
-    param([Parameter(Mandatory)][AllowEmptyString()][string]$GuestOSName)
+    param([Parameter(Mandatory)][string]$Name)
 
-    if ([string]::IsNullOrWhiteSpace($GuestOSName)) {
-        throw 'VMware Tools has not reported a guest OS name. Ensure VMware Tools is running and reporting the OS, then try again. No disk was expanded.'
-    }
-    if ($GuestOSName -notmatch '(?i)\bWindows\b') {
-        throw "Guest OS '$GuestOSName' is not Windows. This script supports Windows guests only."
-    }
-    if ($GuestOSName -match '(?i)\bServer\b') { return 'SQL' }
+    # Check general Windows prefixes first, including assigned VM names.
+    if ($Name -imatch '^11VM(?:DEV|GC|HIV)') { return 'Windows' }
+    if ($Name -imatch 'SQL|GC') { return 'SQL' }
     return 'Windows'
 }
 
@@ -1495,13 +1491,8 @@ try {
     }
     Write-EnhancedUiStatus -Type Success -Message "Selected VM '$($vm.Name)'."
 
-    $vm.ExtensionData.UpdateViewData('Guest')
-    $guestOSName = [string]$vm.ExtensionData.Guest.GuestFullName
-    $workflow = Get-DiskExpansionWorkflow -GuestOSName $guestOSName
-    Write-AlignedDetails -Details ([ordered]@{
-            'Guest OS' = $guestOSName
-            'Workflow' = $(if ($workflow -eq 'SQL') { 'Windows Server (guest volume labels)' } else { 'General Windows' })
-        })
+    $workflow = Get-DiskExpansionWorkflow -Name $vm.Name
+    Write-EnhancedUiStatus -Type Info -Message ("Workflow: " + $(if ($workflow -eq 'SQL') { 'Windows SQL Server (guest volume labels)' } else { 'General Windows' }))
 
     if ($GuestOnly) {
         Write-EnhancedUiPhase -Progress '2/2' -Title 'Inspect and extend the Windows guest partition'
