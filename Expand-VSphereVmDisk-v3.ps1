@@ -1441,7 +1441,9 @@ if ($null -ne (Get-Partition -DiskNumber $diskNumber -PartitionNumber $blockingP
 function Invoke-WindowsGuestPartitionExtension {
     param(
         [Parameter(Mandatory)]
-        [object]$VM
+        [object]$VM,
+
+        [switch]$SkipPartitionSelectionConfirmation
     )
 
     if ($VM.PowerState -ne 'PoweredOn') {
@@ -1474,7 +1476,7 @@ function Invoke-WindowsGuestPartitionExtension {
         }
     }
     Write-Host ''
-    if (-not (Read-YesNo -Prompt 'Proceed to select a Windows partition for extension?')) {
+    if (-not $SkipPartitionSelectionConfirmation -and -not (Read-YesNo -Prompt 'Proceed to select a Windows partition for extension?')) {
         Write-Host ''
         Write-Host 'No guest partition was changed.' -ForegroundColor Yellow
         return
@@ -1561,7 +1563,7 @@ try {
     if ($GuestOnly) {
         Write-EnhancedUiPhase -Progress '2/2' -Title 'Inspect and extend the Windows guest partition'
         Write-Warning "Guest-only mode: no vSphere virtual disk capacity will be changed on '$($vm.Name)'."
-        Invoke-WindowsGuestPartitionExtension -VM $vm
+        Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation:($workflow -eq 'Windows')
         Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '2/2'
         return
     }
@@ -1623,7 +1625,7 @@ try {
 
     Write-EnhancedUiPhase -Progress '3/4' -Title 'Optional Windows guest partition extension'
     if (Read-YesNo -Prompt 'Would you like to review and extend a Windows guest partition?') {
-        Invoke-WindowsGuestPartitionExtension -VM $vm
+        Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation:($workflow -eq 'Windows')
     }
     else {
         Write-Host ''
