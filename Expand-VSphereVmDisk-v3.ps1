@@ -16,8 +16,8 @@ stops the workflow before expansion. Both workflows retain snapshot checks,
 assigned-name lookup, authentication retry, and explicit mutation confirmations.
 
 Prompts for a VM name, a disk number, and an amount to add in GB unless those
-values are supplied as parameters. If the entered VM name is not found exactly,
-the script searches for a uniquely matching assigned name in the form
+values are supplied as parameters. If an entered name starting with 11VMDEV,
+11VMGC, or 11VMHIV is not found exactly, the script searches for an assigned name in the form
 'EnteredName - Assigned User' and requires confirmation before using it. VM name
 wildcard characters (*, ?, [, ]) are rejected. Enter 'exit' at any script prompt
 to cancel the remaining workflow; before confirmation it makes no changes, and
@@ -44,7 +44,8 @@ for a vCenter Server.
 Optional credential passed to Connect-VIServer when a new connection is needed.
 
 .PARAMETER VMName
-Optional VM name. If it is not found exactly and one assigned VM matches the
+Optional VM name. Assigned-name fallback applies only to 11VMDEV, 11VMGC, and
+11VMHIV prefixes. If it is not found exactly and one assigned VM matches the
 name followed by ' - Assigned User', the script displays that VM and asks for
 confirmation. Wildcard characters are not permitted.
 
@@ -403,7 +404,7 @@ function Select-ExactVM {
 
     while ($true) {
         if ([string]::IsNullOrWhiteSpace($candidateName)) {
-            $candidateName = Read-ExitAwareInput -Prompt 'Enter VM name'
+            $candidateName = (Read-ExitAwareInput -Prompt 'Enter VM name').Trim()
             Stop-IfExitRequested
         }
 
@@ -431,6 +432,17 @@ function Select-ExactVM {
         }
         if ($exactMatches.Count -gt 1) {
             $message = "More than one VM is named '$candidateName'. Use a unique VM name before running this script."
+            if ($initialNameWasSupplied) {
+                throw $message
+            }
+            Write-Warning $message
+            Write-Host ''
+            $candidateName = ''
+            continue
+        }
+
+        if ($candidateName -notmatch '(?i)^11VM(?:DEV|GC|HIV)') {
+            $message = "VM '$candidateName' was not found by exact name on vCenter Server '$($Server.Name)'. Verify the VM inventory name and selected vCenter Server."
             if ($initialNameWasSupplied) {
                 throw $message
             }
