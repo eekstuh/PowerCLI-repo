@@ -704,7 +704,7 @@ function Select-VMWithGuestWorkflow {
         }
         catch {
             Write-Warning "Could not retrieve VMware Tools guest information for VM '$($selectedVM.Name)': $($_.Exception.Message)"
-            Write-Host 'No changes were made. Enter another VM name.' -ForegroundColor Yellow
+            Write-Host 'Please enable VMware Tools on the selected VM or enter another VM name.' -ForegroundColor Yellow
             Write-Host ''
             $useInitialVMName = $false
             continue
@@ -714,7 +714,7 @@ function Select-VMWithGuestWorkflow {
         if ($toolsRunningStatus -notin @('guestToolsRunning', 'guestToolsExecutingScripts')) {
             $displayStatus = if ([string]::IsNullOrWhiteSpace($toolsRunningStatus)) { 'not reported' } else { $toolsRunningStatus }
             Write-Warning "VMware Tools is not running on VM '$($selectedVM.Name)' (status: $displayStatus)."
-            Write-Host 'No changes were made. Enter another VM name.' -ForegroundColor Yellow
+            Write-Host 'Please enable VMware Tools on the selected VM or enter another VM name.' -ForegroundColor Yellow
             Write-Host ''
             $useInitialVMName = $false
             continue
