@@ -1060,10 +1060,18 @@ $partitions = foreach ($disk in Get-Disk | Where-Object { $_.OperationalStatus -
 function Select-WindowsGuestPartition {
     param(
         [Parameter(Mandatory)]
-        [object[]]$Partitions
+        [object[]]$Partitions,
+
+        [switch]$NoLeadingBlankLine
     )
 
-    Write-Host "`nWindows guest disks and partitions:" -ForegroundColor Cyan
+    $heading = if ($NoLeadingBlankLine) {
+        'Windows guest disks and partitions:'
+    }
+    else {
+        "`nWindows guest disks and partitions:"
+    }
+    Write-Host $heading -ForegroundColor Cyan
     $partitionTable = $Partitions |
         Sort-Object DiskNumber, PartitionNumber |
         Select-Object DiskNumber,
@@ -1508,7 +1516,7 @@ function Invoke-WindowsGuestPartitionExtension {
         }
     }
 
-    $partition = Select-WindowsGuestPartition -Partitions $partitions
+    $partition = Select-WindowsGuestPartition -Partitions $partitions -NoLeadingBlankLine:$SkipPartitionSelectionConfirmation
     Write-Host ''
     $extensionState = Get-WindowsPartitionExtensionState -VM $VM -Credential $credential -Partition $partition
     $following = $extensionState.FollowingPartition
