@@ -748,7 +748,10 @@ function Test-VMSnapshotPrerequisite {
     $snapshots = @(Get-Snapshot -VM $VM -Server $Server -ErrorAction Stop)
     if ($snapshots.Count -gt 0) {
         Write-Host ''
-        Write-Warning "VM '$($VM.Name)' has $($snapshots.Count) existing snapshot(s). Remove all snapshots and wait for removal to complete before adding disk space in vSphere. Then run this script again."
+        $snapshotWarning = "VM '$($VM.Name)' has $($snapshots.Count) existing snapshot(s)."
+        $snapshotWarning += [Environment]::NewLine
+        $snapshotWarning += 'Remove all snapshots and wait for removal to complete before adding disk space in vSphere. Then run this script again.'
+        Write-Warning $snapshotWarning
         Write-Host 'Disk expansion stopped. No disk capacity or Windows partition changes were made.' -ForegroundColor Yellow
         return $false
     }
