@@ -14,6 +14,10 @@ SQL mode retrieves and maps Windows volume labels before disk selection and reus
 the guest credentials for partition extension. Failed inventory or disk mapping
 stops the workflow before expansion. Both workflows retain snapshot checks,
 assigned-name lookup, authentication retry, and explicit mutation confirmations.
+Both disk lists include GuestVolumeFreeGB from the latest VMware Tools report.
+Multiple mapped volumes are listed separately by path. Missing mapping or free-space
+data displays Unavailable. This column does not require additional guest credentials
+and does not include unpartitioned space on the VMDK.
 
 Prompts for a VM name, a disk number, and an amount to add in GB unless those
 values are supplied as parameters. If an entered name starting with 11VMDEV,
@@ -617,6 +621,34 @@ function Get-GuestVolumeDisplayForHardDisk {
     return $displayValues -join '; '
 }
 
+function Get-HardDiskGuestFreeSpace {
+    param(
+        [Parameter(Mandatory)][object]$HardDisk,
+        [Parameter(Mandatory)][object]$VM
+    )
+
+    # Match Tools volume paths to this VMDK; never infer Windows disk numbers.
+    try {
+        $mappedVolumes = @(Get-VMGuestDisk -HardDisk $HardDisk -ErrorAction Stop)
+        $paths = @($mappedVolumes | ForEach-Object { [string]$_.DiskPath } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+        if ($paths.Count -eq 0) { return 'Unavailable' }
+        $values = foreach ($path in $paths) {
+            $normalizedPath = ConvertTo-NormalizedWindowsVolumePath -Path $path
+            $matches = @($VM.ExtensionData.Guest.Disk | Where-Object {
+                (ConvertTo-NormalizedWindowsVolumePath -Path $_.DiskPath) -eq $normalizedPath
+            })
+            if ($matches.Count -eq 1 -and $null -ne $matches[0].FreeSpace) {
+                $freeGB = [math]::Round(([decimal]$matches[0].FreeSpace / 1GB), 2)
+                if ($paths.Count -eq 1) { $freeGB } else { "$path [$freeGB]" }
+            }
+            else { "$path [Unavailable]" }
+        }
+        return $values -join '; '
+    }
+    catch { return 'Unavailable' }
+}
+
 function Get-DiskExpansionWorkflow {
     param([Parameter(Mandatory)][string]$Name)
 
@@ -766,6 +798,7 @@ function Select-HardDisk {
         }
         $row += [ordered]@{
             HardDiskCapacityGB         = [decimal]$disks[$index].CapacityGB
+            GuestVolumeFreeGB          = Get-HardDiskGuestFreeSpace -HardDisk $disks[$index] -VM $VM
             DatastoreFreeGB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.FreeSpaceGB } else { 'Unavailable' }
             DatastoreProvisionedGB     = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.ProvisionedSpaceGB } else { 'Unavailable' }
             DatastoreFile              = $disks[$index].Filename
