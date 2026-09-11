@@ -1536,7 +1536,7 @@ function Invoke-WindowsGuestPartitionExtension {
         $removalResult = Remove-WindowsBlockingPartition -VM $VM -Credential $credential -Partition $partition -BlockingPartition $following
         $script:GuestPartitionDeleted = $true
         if ([bool]$following.IsRecovery) {
-            Write-Warning "Deleted Recovery partition $($removalResult.RecoveryPartitionNumber). WinRE is now disabled."
+            Write-Warning "Deleted Recovery partition $($removalResult.RecoveryPartitionNumber)."
         }
         else {
             Write-Warning "Deleted blocking partition $($removalResult.BlockingPartitionNumber)."
