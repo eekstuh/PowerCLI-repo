@@ -31,6 +31,7 @@ to cancel the remaining workflow; before confirmation it makes no changes, and
 after VMDK expansion it prevents further guest changes.
 In the Windows Workstation workflow, enter 'skip' at the capacity prompt to leave
 the VMDK unchanged and proceed directly to Windows partition expansion.
+At the Windows partition prompt, enter 'back' to select a different Windows disk.
 
 This script expands the VMDK only.  It does not extend a Windows partition or
 volume inside the guest OS unless you opt in after the VMDK expansion. The
@@ -1133,7 +1134,9 @@ function Select-WindowsGuestPartition {
         [Parameter(Mandatory)]
         [object[]]$Partitions,
 
-        [switch]$NoLeadingBlankLine
+        [switch]$NoLeadingBlankLine,
+
+        [switch]$WindowsWorkstationWorkflow
     )
 
     $heading = if ($NoLeadingBlankLine) {
@@ -1159,7 +1162,13 @@ function Select-WindowsGuestPartition {
     Write-Host ''
 
     while ($true) {
-        $diskInput = Read-ExitAwareInput -Prompt 'Select the Windows disk corresponding to the expanded virtual disk by entering its disk number'
+        $diskPrompt = if ($WindowsWorkstationWorkflow) {
+            'Select Windows disk number'
+        }
+        else {
+            'Select the Windows disk corresponding to the expanded virtual disk by entering its disk number'
+        }
+        $diskInput = Read-ExitAwareInput -Prompt $diskPrompt
         Stop-IfExitRequested
 
         [int]$guestDiskNumber = 0
@@ -1170,8 +1179,19 @@ function Select-WindowsGuestPartition {
         }
 
         Write-Host ''
-        $partitionInput = Read-ExitAwareInput -Prompt "Select the partition to extend on Windows disk $guestDiskNumber by entering its partition number"
+        $partitionInputArguments = @{
+            Prompt = "Select the partition to extend on Windows disk $guestDiskNumber by entering its partition number"
+        }
+        if ($WindowsWorkstationWorkflow) {
+            $partitionInputArguments.PromptOptions = "enter 'back' to select another Windows disk, or 'exit' to cancel"
+        }
+        $partitionInput = Read-ExitAwareInput @partitionInputArguments
         Stop-IfExitRequested
+
+        if ($WindowsWorkstationWorkflow -and $partitionInput -ieq 'back') {
+            Write-Host ''
+            continue
+        }
 
         [int]$guestPartitionNumber = 0
         if (-not [int]::TryParse($partitionInput, [ref]$guestPartitionNumber)) {
@@ -1547,7 +1567,9 @@ function Invoke-WindowsGuestPartitionExtension {
         [Parameter(Mandatory)]
         [object]$VM,
 
-        [switch]$SkipPartitionSelectionConfirmation
+        [switch]$SkipPartitionSelectionConfirmation,
+
+        [switch]$WindowsWorkstationWorkflow
     )
 
     if ($VM.PowerState -ne 'PoweredOn') {
@@ -1589,7 +1611,7 @@ function Invoke-WindowsGuestPartitionExtension {
         }
     }
 
-    $partition = Select-WindowsGuestPartition -Partitions $partitions -NoLeadingBlankLine:$SkipPartitionSelectionConfirmation
+    $partition = Select-WindowsGuestPartition -Partitions $partitions -NoLeadingBlankLine:$SkipPartitionSelectionConfirmation -WindowsWorkstationWorkflow:$WindowsWorkstationWorkflow
     Write-Host ''
     $extensionState = Get-WindowsPartitionExtensionState -VM $VM -Credential $credential -Partition $partition
     $following = $extensionState.FollowingPartition
@@ -1670,7 +1692,7 @@ try {
     if ($GuestOnly) {
         Write-EnhancedUiPhase -Progress '2/2' -Title 'Inspect and extend the Windows guest partition'
         Write-Warning "Guest-only mode: no vSphere virtual disk capacity will be changed on '$($vm.Name)'."
-        Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation:($workflow -eq 'Windows')
+        Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation:($workflow -eq 'Windows') -WindowsWorkstationWorkflow:($workflow -eq 'Windows')
         Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '2/2'
         return
     }
@@ -1703,7 +1725,7 @@ try {
         Write-Host ''
         Write-EnhancedUiStatus -Type Info -Message "vSphere capacity expansion was skipped for '$($disk.Name)'."
         Write-EnhancedUiPhase -Progress '3/4' -Title 'Windows guest partition extension' -NoTrailingBlankLine
-        Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation
+        Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation -WindowsWorkstationWorkflow
         Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '4/4' -SelectedDisk $disk.Name -VmdkSkipped
         return
     }
@@ -1740,7 +1762,7 @@ try {
 
     Write-EnhancedUiPhase -Progress '3/4' -Title 'Optional Windows guest partition extension'
     if (Read-YesNo -Prompt 'Would you like to review and extend a Windows guest partition?') {
-        Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation:($workflow -eq 'Windows')
+        Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation:($workflow -eq 'Windows') -WindowsWorkstationWorkflow:($workflow -eq 'Windows')
     }
     else {
         Write-Host ''
