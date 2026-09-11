@@ -1592,6 +1592,10 @@ try {
     }
     Write-EnhancedUiStatus -Type Success -Message "Selected VM '$($vm.Name)'."
 
+    if (-not $GuestOnly -and -not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
+        return
+    }
+
     $vm.ExtensionData.UpdateViewData('Guest')
     $guestOSName = [string]$vm.ExtensionData.Guest.GuestFullName
     $workflow = Get-DiskExpansionWorkflow -GuestOSName $guestOSName
@@ -1605,10 +1609,6 @@ try {
         Write-Warning "Guest-only mode: no vSphere virtual disk capacity will be changed on '$($vm.Name)'."
         Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation:($workflow -eq 'Windows')
         Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '2/2'
-        return
-    }
-
-    if ($workflow -eq 'SQL' -and -not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
         return
     }
 
@@ -1642,10 +1642,6 @@ try {
         Write-EnhancedUiPhase -Progress '3/4' -Title 'Windows guest partition extension' -NoTrailingBlankLine
         Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation
         Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '4/4' -SelectedDisk $disk.Name -VmdkSkipped
-        return
-    }
-
-    if (-not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
         return
     }
 
