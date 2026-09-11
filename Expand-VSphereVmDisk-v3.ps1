@@ -14,7 +14,7 @@ SQL mode retrieves and maps Windows volume labels before disk selection and reus
 the guest credentials for partition extension. Failed inventory or disk mapping
 stops the workflow before expansion. Both workflows retain snapshot checks,
 assigned-name lookup, authentication retry, and explicit mutation confirmations.
-Both disk lists include GuestVolumeFreeGB from the latest VMware Tools report.
+Only the SQL workflow disk list includes GuestVolumeFreeGB from the latest VMware Tools report.
 Multiple mapped volumes are listed separately by path. Missing mapping or free-space
 data displays Unavailable. This column does not require additional guest credentials
 and does not include unpartitioned space on the VMDK.
@@ -796,9 +796,11 @@ function Select-HardDisk {
             }
             $row['GuestVolumes'] = $display
         }
+        $row['HardDiskCapacityGB'] = [decimal]$disks[$index].CapacityGB
+        if ($IncludeGuestVolumes) {
+            $row['GuestVolumeFreeGB'] = Get-HardDiskGuestFreeSpace -HardDisk $disks[$index] -VM $VM
+        }
         $row += [ordered]@{
-            HardDiskCapacityGB         = [decimal]$disks[$index].CapacityGB
-            GuestVolumeFreeGB          = Get-HardDiskGuestFreeSpace -HardDisk $disks[$index] -VM $VM
             DatastoreFreeGB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.FreeSpaceGB } else { 'Unavailable' }
             DatastoreProvisionedGB     = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.ProvisionedSpaceGB } else { 'Unavailable' }
             DatastoreFile              = $disks[$index].Filename
