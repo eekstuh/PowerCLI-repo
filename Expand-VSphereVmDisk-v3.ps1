@@ -419,7 +419,7 @@ function Select-ExactVM {
 
     while ($true) {
         if ([string]::IsNullOrWhiteSpace($candidateName)) {
-            $candidateName = (Read-ExitAwareInput -Prompt 'Enter VM name').Trim()
+            $candidateName = Read-ExitAwareInput -Prompt 'Enter VM name'
             Stop-IfExitRequested
         }
 
