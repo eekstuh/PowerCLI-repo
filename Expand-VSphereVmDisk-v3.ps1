@@ -312,10 +312,13 @@ function Read-ExitAwareInput {
     [OutputType([string])]
     param(
         [Parameter(Mandatory)]
-        [string]$Prompt
+        [string]$Prompt,
+
+        [Parameter()]
+        [string]$PromptOptions = "enter 'exit' to cancel"
     )
 
-    $value = Read-Host -Prompt "$Prompt (enter 'exit' to cancel)"
+    $value = Read-Host -Prompt "$Prompt ($PromptOptions)"
     if ($null -eq $value) {
         return $null
     }
@@ -868,13 +871,13 @@ function Read-AdditionalCapacityGB {
 
     Write-Host ''
     while ($true) {
-        $prompt = if ($AllowSkip) {
-            "Enter the capacity to add, in GB, or enter 'skip' to proceed to Windows partition expansion"
+        $inputArguments = @{
+            Prompt = 'Enter the capacity to add, in GB'
         }
-        else {
-            'Enter the capacity to add, in GB'
+        if ($AllowSkip) {
+            $inputArguments.PromptOptions = "enter 'skip' to proceed to Windows partition expansion, or 'exit' to cancel"
         }
-        $inputValue = Read-ExitAwareInput -Prompt $prompt
+        $inputValue = Read-ExitAwareInput @inputArguments
         Stop-IfExitRequested
 
         if ($AllowSkip -and $inputValue -ieq 'skip') {
