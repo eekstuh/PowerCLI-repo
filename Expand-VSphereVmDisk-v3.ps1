@@ -1497,6 +1497,7 @@ function Invoke-WindowsGuestPartitionExtension {
         }
 
         try {
+            Write-EnhancedUiStatus -Type Info -Message 'Fetching Windows guest disks and partition information.'
             $partitions = Get-WindowsGuestPartitions -VM $VM -Credential $credential
             break
         }
