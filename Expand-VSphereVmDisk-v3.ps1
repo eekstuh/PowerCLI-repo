@@ -1625,7 +1625,7 @@ try {
     if ($null -eq $additionalGB) {
         Write-Host ''
         Write-EnhancedUiStatus -Type Info -Message "vSphere capacity expansion was skipped for '$($disk.Name)'."
-        Write-EnhancedUiPhase -Progress '3/4' -Title 'Windows guest partition extension'
+        Write-EnhancedUiPhase -Progress '3/4' -Title 'Windows guest partition extension' -NoTrailingBlankLine
         Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation
         Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '4/4' -SelectedDisk $disk.Name -VmdkSkipped
         return
