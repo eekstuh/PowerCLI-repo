@@ -138,7 +138,7 @@ function Write-EnhancedUiBanner {
 
     $line = '=' * 72
     Write-Host "`n$line" -ForegroundColor DarkCyan
-    Write-Host '  vSphere Windows Disk Expansion Assistant - Version 3' -ForegroundColor Cyan
+    Write-Host '  vSphere Windows VM Disk Expansion Assistant - Version 3.0' -ForegroundColor Cyan
     Write-Host '  VMDK expansion | Guest partition analysis | Recovery handling' -ForegroundColor Gray
     Write-Host $line -ForegroundColor DarkCyan
     Write-Host "Enter 'exit' at any text prompt to cancel." -ForegroundColor DarkGray
