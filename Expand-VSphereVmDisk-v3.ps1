@@ -1228,7 +1228,8 @@ function Confirm-WindowsRecoveryPartitionDeletion {
     )
 
     Write-Warning "A $($RecoveryPartition.SizeGB) GB Windows Recovery partition (partition $($RecoveryPartition.PartitionNumber)) immediately follows the selected partition."
-    Write-Warning 'Deleting it is permanent and disables Windows Recovery Environment (WinRE). The script will not recreate the Recovery partition or re-enable WinRE.'
+    Write-Warning 'Deleting it is permanent and disables Windows Recovery Environment (WinRE).'
+    Write-Warning 'The script will not recreate the Recovery partition or re-enable WinRE.'
     Write-Host ''
 
     if (-not (Read-YesNo -Prompt 'Do you authorize permanent deletion of this Windows Recovery partition?')) {
