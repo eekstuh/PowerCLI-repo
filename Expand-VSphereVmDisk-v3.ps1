@@ -878,7 +878,7 @@ function Read-AdditionalCapacityGB {
             Prompt = 'Enter the capacity to add, in GB'
         }
         if ($AllowSkip) {
-            $inputArguments.PromptOptions = "enter 'skip' to proceed to Windows partition expansion, or 'exit' to cancel"
+            $inputArguments.PromptOptions = "enter 'skip' to skip this step, or 'exit' to cancel"
         }
         $inputValue = Read-ExitAwareInput @inputArguments
         Stop-IfExitRequested
