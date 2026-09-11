@@ -8,7 +8,7 @@ Expands one existing virtual disk on a vSphere VM with an enhanced Version 3 con
 .DESCRIPTION
 Automatically selects the workflow from the guest OS name reported by VMware Tools.
 Windows Server guests use the SQL volume-label workflow; Windows desktop guests
-use the general Windows workflow. VM names do not determine the workflow.
+use the Windows Workstation workflow. VM names do not determine the workflow.
 Missing or unrecognized guest OS information prevents that VM from continuing.
 If VMware Tools is not running or cannot report a supported Windows OS, the script
 warns the operator and returns to the VM name prompt.
@@ -29,7 +29,7 @@ values are supplied as parameters. If an entered name starting with 11VMDEV,
 wildcard characters (*, ?, [, ]) are rejected. Enter 'exit' at any script prompt
 to cancel the remaining workflow; before confirmation it makes no changes, and
 after VMDK expansion it prevents further guest changes.
-In the General Windows workflow, enter 'skip' at the capacity prompt to leave
+In the Windows Workstation workflow, enter 'skip' at the capacity prompt to leave
 the VMDK unchanged and proceed directly to Windows partition expansion.
 
 This script expands the VMDK only.  It does not extend a Windows partition or
@@ -1664,7 +1664,7 @@ try {
 
     Write-AlignedDetails -Details ([ordered]@{
             'Guest OS' = $guestOSName
-            'Workflow' = $(if ($workflow -eq 'SQL') { 'Windows Server (SQL workflow)' } else { 'General Windows' })
+            'Workflow' = $(if ($workflow -eq 'SQL') { 'Windows Server (SQL workflow)' } else { 'Windows Workstation' })
         })
 
     if ($GuestOnly) {
