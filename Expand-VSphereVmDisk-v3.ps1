@@ -806,7 +806,15 @@ function Select-HardDisk {
         [pscustomobject]$row
     }
     # Keep the table's leading gap, but own its trailing spacing explicitly.
-    Write-Host (($diskList | Format-Table -AutoSize | Out-String).TrimEnd())
+    $tableColumns = foreach ($column in $diskList[0].PSObject.Properties.Name) {
+        if ($column -eq 'GuestVolumeFreeGB') {
+            @{ Name = 'GuestVolumeFreeGB'; Expression = { $_.GuestVolumeFreeGB }; Alignment = 'Right' }
+        }
+        else {
+            $column
+        }
+    }
+    Write-Host (($diskList | Format-Table -Property $tableColumns -AutoSize | Out-String).TrimEnd())
     Write-Host ''
 
     if ($PSBoundParameters.ContainsKey('InitialDiskNumber')) {
