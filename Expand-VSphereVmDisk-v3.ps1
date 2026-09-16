@@ -913,7 +913,7 @@ function Select-HardDisk {
     }
 
     while ($true) {
-        $choice = Read-ExitAwareInput -Prompt 'Select the virtual disk to expand by entering its number'
+        $choice = Read-ExitAwareInput -Prompt 'Select virtual disk number'
         Stop-IfExitRequested
 
         [int]$diskNumber = 0
