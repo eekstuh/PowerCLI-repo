@@ -1741,7 +1741,7 @@ try {
     if (-not $diskNumberWasSupplied) {
         Write-Host ''
     }
-    Write-EnhancedUiStatus -Type Info -Message "Selected $($disk.Name) with current capacity $($disk.CapacityGB) GB."
+    Write-EnhancedUiStatus -Type Success -Message "Selected $($disk.Name) with current capacity $($disk.CapacityGB) GB."
 
     $capacityArguments = @{}
     if ($sizeWasSupplied) {
