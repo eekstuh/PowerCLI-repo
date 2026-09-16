@@ -1728,7 +1728,7 @@ try {
         return
     }
 
-    Write-EnhancedUiPhase -Progress '2/4' -Title 'Select and expand the vSphere virtual disk' -NoTrailingBlankLine
+    Write-EnhancedUiPhase -Progress '2/4' -Title 'Select a virtual disk and specify how much space to add in vSphere' -NoTrailingBlankLine
     $diskArguments = @{ VM = $vm; Server = $server }
     if ($workflow -eq 'SQL') {
         $diskArguments.VolumeLabelsByPath = Get-CombinedGuestVolumeLabelMap -VM $vm
