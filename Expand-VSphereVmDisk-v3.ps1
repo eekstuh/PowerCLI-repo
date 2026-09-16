@@ -17,7 +17,7 @@ the guest credentials for partition extension. Failed guest inventory stops the
 workflow before expansion. Missing per-disk mappings or labels are displayed as
 unavailable; disk and Windows partition selection remain manual. Both workflows retain snapshot checks,
 assigned-name lookup, authentication retry, and explicit mutation confirmations.
-Only the SQL workflow disk list includes GuestVolumeFreeGB from the latest VMware Tools report.
+Only the SQL workflow disk list includes GuestVolFreeGB from the latest VMware Tools report.
 Multiple mapped volumes are listed separately by path. Missing mapping or free-space
 data displays Unavailable. This column does not require additional guest credentials
 and does not include unpartitioned space on the VMDK.
@@ -883,7 +883,7 @@ function Select-HardDisk {
         }
         $row['HDCapacityGB'] = [decimal]$disks[$index].CapacityGB
         if ($IncludeGuestVolumes) {
-            $row['GuestVolumeFreeGB'] = Get-HardDiskGuestFreeSpace -HardDisk $disks[$index] -VM $VM
+            $row['GuestVolFreeGB'] = Get-HardDiskGuestFreeSpace -HardDisk $disks[$index] -VM $VM
         }
         $row += [ordered]@{
             DatastoreFreeGB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.FreeSpaceGB } else { 'Unavailable' }
@@ -894,8 +894,8 @@ function Select-HardDisk {
     }
     # Keep the table's leading gap, but own its trailing spacing explicitly.
     $tableColumns = foreach ($column in $diskList[0].PSObject.Properties.Name) {
-        if ($column -eq 'GuestVolumeFreeGB') {
-            @{ Name = 'GuestVolumeFreeGB'; Expression = { $_.GuestVolumeFreeGB }; Alignment = 'Right' }
+        if ($column -eq 'GuestVolFreeGB') {
+            @{ Name = 'GuestVolFreeGB'; Expression = { $_.GuestVolFreeGB }; Alignment = 'Right' }
         }
         else {
             $column
@@ -1169,12 +1169,12 @@ function Select-WindowsGuestPartition {
     Write-Host $heading -ForegroundColor Cyan
     $partitionTable = $Partitions |
         Sort-Object DiskNumber, PartitionNumber |
-        Select-Object DiskNumber,
-            PartitionNumber,
+        Select-Object @{ Name = 'DiskNum'; Expression = { $_.DiskNumber } },
+            @{ Name = 'PartitionNum'; Expression = { $_.PartitionNumber } },
             DriveLetter,
             Label,
             @{ Name = 'PartitionSizeGB'; Expression = { $_.SizeGB } },
-            @{ Name = 'AvailableDiskSpaceGB'; Expression = { $_.AvailableSpaceGB } },
+            @{ Name = 'DiskSpaceFreeGB'; Expression = { $_.AvailableSpaceGB } },
             DiskSizeGB,
             Type,
             IsRecovery |
