@@ -39,6 +39,8 @@ guest extension requires VMware Tools and a Windows administrator credential.
 If a Recovery or another partition follows the chosen partition, the script
 stops before extending it. You may explicitly authorize deletion of that
 adjacent blocking partition. Deleting a Recovery partition also disables WinRE.
+Online Windows disks with no partitions are displayed as 'No partitions' and
+cannot be selected for partition extension.
 
 VMDK expansion stops if the VM has snapshots. Remove the snapshots and wait
 for removal to complete before running the script again. The script checks
@@ -1102,8 +1104,25 @@ $ErrorActionPreference = 'Stop'
 Update-HostStorageCache
 
 $recoveryGptType = 'de94bba4-06d1-4d40-a16a-bfd50179d6ac'
-$partitions = foreach ($disk in Get-Disk | Where-Object { $_.OperationalStatus -eq 'Online' }) {
-    foreach ($partition in Get-Partition -DiskNumber $disk.Number) {
+$onlineDisks = @(Get-Disk | Where-Object { $_.OperationalStatus -eq 'Online' })
+$allPartitions = @(Get-Partition -ErrorAction SilentlyContinue)
+$partitions = foreach ($disk in $onlineDisks) {
+    $diskPartitions = @($allPartitions | Where-Object { $_.DiskNumber -eq $disk.Number })
+    if ($diskPartitions.Count -eq 0) {
+        [pscustomobject]@{
+            DiskNumber      = $disk.Number
+            DiskSizeGB      = [math]::Round($disk.Size / 1GB, 2)
+            PartitionNumber = $null
+            DriveLetter     = ''
+            Label           = ''
+            SizeGB          = $null
+            Type            = 'No partitions'
+            IsRecovery      = $false
+        }
+        continue
+    }
+
+    foreach ($partition in $diskPartitions) {
         $volume = Get-Volume -Partition $partition -ErrorAction SilentlyContinue
         [pscustomobject]@{
             DiskNumber      = $disk.Number
@@ -1174,6 +1193,15 @@ function Select-WindowsGuestPartition {
         [int]$guestDiskNumber = 0
         if (-not [int]::TryParse($diskInput, [ref]$guestDiskNumber) -or -not ($Partitions.DiskNumber -contains $guestDiskNumber)) {
             Write-Warning 'Enter a disk number shown in the list.'
+            Write-Host ''
+            continue
+        }
+
+        $availablePartitions = @($Partitions | Where-Object {
+                $_.DiskNumber -eq $guestDiskNumber -and $null -ne $_.PartitionNumber
+            })
+        if ($availablePartitions.Count -eq 0) {
+            Write-Warning "Windows disk $guestDiskNumber has no partitions available for extension. Select another Windows disk."
             Write-Host ''
             continue
         }
