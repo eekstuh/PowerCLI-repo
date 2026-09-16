@@ -881,13 +881,13 @@ function Select-HardDisk {
             $display = Get-GuestVolumeDisplayForHardDisk -HardDisk $disks[$index] -VolumeLabelsByPath $VolumeLabelsByPath
             $row['GuestVolumes'] = $display
         }
-        $row['HardDiskCapacityGB'] = [decimal]$disks[$index].CapacityGB
+        $row['HDCapacityGB'] = [decimal]$disks[$index].CapacityGB
         if ($IncludeGuestVolumes) {
             $row['GuestVolumeFreeGB'] = Get-HardDiskGuestFreeSpace -HardDisk $disks[$index] -VM $VM
         }
         $row += [ordered]@{
             DatastoreFreeGB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.FreeSpaceGB } else { 'Unavailable' }
-            DatastoreProvisionedGB     = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.ProvisionedSpaceGB } else { 'Unavailable' }
+            DatastoreProvDB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.ProvisionedSpaceGB } else { 'Unavailable' }
             DatastoreFile              = $disks[$index].Filename
         }
         [pscustomobject]$row
