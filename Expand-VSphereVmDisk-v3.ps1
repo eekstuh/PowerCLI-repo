@@ -1116,6 +1116,7 @@ $partitions = foreach ($disk in $onlineDisks) {
             DriveLetter     = ''
             Label           = ''
             SizeGB          = $null
+            AvailableSpaceGB = $null
             Type            = 'No partitions'
             IsRecovery      = $false
         }
@@ -1131,6 +1132,7 @@ $partitions = foreach ($disk in $onlineDisks) {
             DriveLetter     = if ($null -ne $volume -and $null -ne $volume.DriveLetter) { $volume.DriveLetter } else { '' }
             Label           = if ($null -ne $volume) { $volume.FileSystemLabel } else { '' }
             SizeGB          = [math]::Round($partition.Size / 1GB, 2)
+            AvailableSpaceGB = if ($null -ne $volume -and $null -ne $volume.SizeRemaining) { [math]::Round($volume.SizeRemaining / 1GB, 2) } else { $null }
             Type            = $partition.Type
             IsRecovery      = ($partition.Type -eq 'Recovery' -or $partition.GptType -eq $recoveryGptType)
         }
@@ -1172,6 +1174,7 @@ function Select-WindowsGuestPartition {
             DriveLetter,
             Label,
             @{ Name = 'PartitionSizeGB'; Expression = { $_.SizeGB } },
+            @{ Name = 'AvailableDiskSpaceGB'; Expression = { $_.AvailableSpaceGB } },
             DiskSizeGB,
             Type,
             IsRecovery |
