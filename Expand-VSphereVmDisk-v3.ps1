@@ -887,7 +887,7 @@ function Select-HardDisk {
         }
         $row += [ordered]@{
             DatastoreFreeGB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.FreeSpaceGB } else { 'Unavailable' }
-            DatastoreProvDB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.ProvisionedSpaceGB } else { 'Unavailable' }
+            DatastoreProvGB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.ProvisionedSpaceGB } else { 'Unavailable' }
             DatastoreFile              = $disks[$index].Filename
         }
         [pscustomobject]$row
