@@ -163,7 +163,6 @@ function Write-Banner {
     Write-Host "`n$line" -ForegroundColor DarkCyan
     Write-Host '  VDI Assignment Assistant - Version 1.0' -ForegroundColor Cyan
     Write-Host $line -ForegroundColor DarkCyan
-    Write-Host "Enter 'exit' at any text prompt to cancel." -ForegroundColor DarkGray
 }
 
 function Write-AlignedDetails {

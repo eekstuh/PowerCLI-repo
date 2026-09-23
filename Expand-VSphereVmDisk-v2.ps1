@@ -125,7 +125,6 @@ function Write-EnhancedUiBanner {
     Write-Host '  vSphere Windows Disk Expansion Assistant - Version 2' -ForegroundColor Cyan
     Write-Host '  VMDK expansion | Guest partition analysis | Recovery handling' -ForegroundColor Gray
     Write-Host $line -ForegroundColor DarkCyan
-    Write-Host "Enter 'exit' at any text prompt to cancel." -ForegroundColor DarkGray
 }
 
 function Write-AlignedDetails {

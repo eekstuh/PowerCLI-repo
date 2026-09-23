@@ -187,7 +187,6 @@ function Write-Banner {
     Write-Host '  vSphere VM Hardware Assistant - Version 1' -ForegroundColor Cyan
     Write-Host '  Add vCPU | Add/remove memory | Add a uniquely named virtual disk' -ForegroundColor Gray
     Write-Host $line -ForegroundColor DarkCyan
-    Write-Host "Enter 'exit' at any text prompt to cancel." -ForegroundColor DarkGray
 }
 
 function Write-AlignedDetails {

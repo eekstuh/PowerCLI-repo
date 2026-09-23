@@ -117,7 +117,6 @@ function Write-EnhancedUiBanner {
     Write-Host '  SQL VM Disk Expansion Assistant - Version 1' -ForegroundColor Cyan
     Write-Host '  Guest volume labels | VMDK expansion | Recovery handling' -ForegroundColor Gray
     Write-Host $line -ForegroundColor DarkCyan
-    Write-Host "Enter 'exit' at any text prompt to cancel." -ForegroundColor DarkGray
 }
 
 function Write-AlignedDetails {

@@ -147,7 +147,6 @@ function Write-EnhancedUiBanner {
     Write-Host "`n$line" -ForegroundColor DarkCyan
     Write-Host '  vSphere Windows VM Disk Expansion Assistant - Version 3.0' -ForegroundColor Cyan
     Write-Host $line -ForegroundColor DarkCyan
-    Write-Host "Enter 'exit' at any text prompt to cancel." -ForegroundColor DarkGray
 }
 
 function Write-AlignedDetails {
