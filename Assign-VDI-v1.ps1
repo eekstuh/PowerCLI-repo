@@ -1324,7 +1324,22 @@ catch {
 }
 '@
     $wrappedScript = $wrappedScript.Replace('__GUEST_SCRIPT_BODY__', $ScriptText)
-    $result = Invoke-VMScript -VM $VM -GuestCredential $Credential -ScriptType Powershell -ScriptText $wrappedScript -ErrorAction Stop
+    try {
+        $result = Invoke-VMScript -VM $VM -GuestCredential $Credential -ScriptType Powershell -ScriptText $wrappedScript -ErrorAction Stop
+    }
+    catch {
+        if ($_.Exception.Message -match '(?i)vix error codes\s*=\s*\(\s*1\s*,\s*0\s*\)') {
+            $message = "VMware Tools could not complete the guest operation on VM '$($VM.Name)'." +
+                [Environment]::NewLine + [Environment]::NewLine +
+                'Restart the VMware Tools service inside the VM and try again.' +
+                [Environment]::NewLine +
+                'If the issue persists, reboot the VM and retry the assignment.' +
+                [Environment]::NewLine + [Environment]::NewLine +
+                "Error details: $($_.Exception.Message)"
+            throw [System.InvalidOperationException]::new($message, $_.Exception)
+        }
+        throw
+    }
     if ($result.ExitCode -ne 0) {
         $details = [string]$result.ScriptOutput
         if ([string]::IsNullOrWhiteSpace($details)) {
