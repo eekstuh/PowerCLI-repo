@@ -1025,6 +1025,53 @@ function Get-WindowsGuestCredential {
     }
 }
 
+function Invoke-GuestScriptWithCredentialRetry {
+    param(
+        [Parameter(Mandatory)] [object]$VM,
+        [Parameter(Mandatory)] [System.Management.Automation.PSCredential]$Credential,
+        [Parameter(Mandatory)] [string]$ScriptText
+    )
+
+    if ($null -eq (Get-Variable -Name RejectedGuestCredentials -Scope Script -ErrorAction SilentlyContinue)) {
+        $script:RejectedGuestCredentials = [System.Collections.ArrayList]::new()
+    }
+    # Reuse a replacement for credentials already rejected during this session.
+    if ($null -ne $script:RejectedGuestCredentials -and
+        $script:RejectedGuestCredentials.Contains($Credential)) {
+        $Credential = $script:ResolvedGuestCredential
+    }
+
+    while ($true) {
+        $retryMessage = $null
+        if ($Credential.Password.Length -eq 0) {
+            $retryMessage = 'The Windows guest password cannot be empty. Enter the username and password again.'
+        }
+        else {
+            try {
+                return Invoke-VMScript -VM $VM -GuestCredential $Credential -ScriptType Powershell -ScriptText $ScriptText -ErrorAction Stop
+            }
+            catch {
+                if ($_.Exception.Message -notmatch '(?i)vix error codes\s*=\s*\(\s*3033\s*,\s*0\s*\)') {
+                    throw
+                }
+                $retryMessage = 'VMware Tools rejected the Windows guest credentials (VIX 3033). Enter the username and a non-empty password again.'
+            }
+        }
+
+        Write-Warning $retryMessage
+        if ($null -eq $script:RejectedGuestCredentials) {
+            $script:RejectedGuestCredentials = [System.Collections.ArrayList]::new()
+        }
+        [void]$script:RejectedGuestCredentials.Add($Credential)
+        $replacement = Get-Credential -UserName $Credential.UserName -Message 'Enter Windows guest administrator credentials. Select Cancel to cancel this guest operation.'
+        if ($null -eq $replacement) {
+            throw 'Windows guest credential entry was cancelled. The guest operation was not retried.'
+        }
+        $Credential = $replacement
+        $script:ResolvedGuestCredential = $replacement
+    }
+}
+
 function Invoke-WindowsGuestPowerShell {
     param(
         [Parameter(Mandatory)]
@@ -1059,7 +1106,7 @@ catch {
 '@
     $wrappedScript = $wrappedScript.Replace('__GUEST_SCRIPT_BODY__', $ScriptText)
 
-    $result = Invoke-VMScript -VM $VM -GuestCredential $Credential -ScriptType Powershell -ScriptText $wrappedScript -ErrorAction Stop
+    $result = Invoke-GuestScriptWithCredentialRetry -VM $VM -Credential $Credential -ScriptText $wrappedScript
     if ($result.ExitCode -ne 0) {
         $errorDetails = [string]$result.ScriptOutput
         if ([string]::IsNullOrWhiteSpace($errorDetails)) {
