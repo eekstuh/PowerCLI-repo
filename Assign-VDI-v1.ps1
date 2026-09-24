@@ -3,36 +3,31 @@
 Assigns an available developer desktop virtual machine to a user.
 
 .DESCRIPTION
-Selects a naming convention and gathers the user's Active Directory account.
-The script retrieves the user's full name and consultant status from Active
-Directory, finds the highest-numbered assigned virtual machine for the selected
-naming convention in the Developer Desktops cluster, and offers powered-on,
-unassigned virtual machines with higher numbers in ascending order.
+Assigns powered-on VDIs in the Developer Desktops cluster. Retrieves the user's
+full name and consultant status from Active Directory.
 
-After the operator accepts a virtual machine, the script uses VMware Tools guest
-operations to add the user's Active Directory account to the built-in local
-Remote Desktop Users group. The vSphere inventory name is changed only after the
-guest operation succeeds. The Windows computer name is not changed.
+Assignment options:
+  - Select a naming convention to find an available VDI.
+  - Specify a VM by name.
+  - Reassign a VDI to a different user.
+  - Add another user to an assigned VDI without renaming it.
 
-The EXISTING option grants an additional user RDP access to a powered-on VDI
-that is already assigned and whose current vSphere name contains the assignment
-delimiter ' - '. The operator may enter either the full current inventory name
-or only its base VM name without the assigned-user suffix. This option verifies
-the guest group membership but never renames the virtual machine.
+Automatic selection offers unassigned VMs above the highest assigned number
+for the selected naming convention, starting with the lowest eligible number.
+If a VM name already ends with the user's AD full name, asks whether another
+VDI should be assigned.
 
-The REASSIGN option assigns an existing powered-on VDI to a different user. It
-adds and verifies the new user's RDP access and renames the VM for the new user.
-The previous user's RDP access is not removed because that access is managed
-through the RemoteDesktopUsersGPO group.
+Uses VMware Tools to add the AD account to the local Remote Desktop Users
+group and verify membership. Renames the VM in vSphere only after guest access
+is verified. The Windows computer name is unchanged.
 
-If an existing VM name already ends with the same AD full name, the script lists
-the matching VM or VMs and asks whether another VDI should be assigned.
+Adding another user accepts the full assigned VM name or its base name and
+preserves the current VM name. Reassignment renames the VM for the new user
+but preserves the previous user's GPO-managed RDP access.
 
-After each non-CSV assignment, the script asks whether another VDI should be
-assigned and returns to the naming-convention menu when confirmed. CSV mode
-processes the imported rows once and does not display this repeat prompt.
-
-Enter 'exit' at any text prompt to cancel the remaining workflow.
+Interactive mode offers another assignment after each attempt. CSV mode
+processes the imported rows once. Enter 'exit' at a text prompt to cancel the
+remaining workflow.
 
 .PARAMETER VIServer
 Optional vCenter Server host name or IP address. If omitted, an existing active

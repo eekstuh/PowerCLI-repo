@@ -6,19 +6,17 @@
 Changes CPU or memory, or adds a uniquely named virtual disk to one vSphere VM.
 
 .DESCRIPTION
-Selects a VM by exact name and provides three actions:
-  1. Add vCPUs
-  2. Add or remove memory
-  3. Add an additional virtual disk
+Selects a VM by exact name and offers three hardware actions:
+  - Add vCPUs.
+  - Add or remove memory.
+  - Add a virtual disk.
 
-New virtual disks are created with an explicitly selected backing filename.
-The filename follows the existing VM disk naming convention and is checked
-against every attached VMDK filename, preventing duplicate names when the new
-disk is placed on another datastore. For disk additions, the script displays
-each SCSI controller and its attached disks, then prompts for the controller
-that should receive the new disk.
+For a new disk, displays SCSI controllers and their attached disks so you can
+choose a controller. The VMDK filename follows the existing naming convention
+and is checked against all attached disk filenames, including those on other
+datastores.
 
-Enter 'exit' at any text prompt to cancel the operation.
+Enter 'exit' at a text prompt to cancel the remaining operation.
 
 .PARAMETER VIServer
 Optional vCenter Server name. When omitted, one active default PowerCLI

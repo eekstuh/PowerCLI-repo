@@ -3,14 +3,20 @@
   Interactively create a numbered batch of developer desktop VMs.
 
 .DESCRIPTION
-  - Prompts for the 11VMGC, 11VMDEV, 11VMSAS, or a single custom VM name
-  - Finds the highest existing number, including VMs renamed with " - User Name"
-  - Shows the complete plan and requires confirmation before provisioning
-  - Avoids PowerCLI ClientMapper / EndProcessing crashes
-  - Does NOT rely on New-VM output objects
-  - Uses real datastore instead of DatastoreCluster object
-  - Sequential provisioning
-  - Reuses an active vCenter connection or prompts to establish one
+Creates developer desktop VMs sequentially from the configured template.
+
+Naming:
+Choose 11VMGC, 11VMDEV, 11VMSAS, or a custom VM name. Numbered naming finds the
+highest existing number, including VMs renamed with an assigned-user suffix.
+
+Provisioning:
+Displays the complete plan and requires confirmation before creating VMs.
+Uses a datastore selected from the datastore cluster. Does not depend on
+New-VM output objects, avoiding the associated ClientMapper/EndProcessing
+issues.
+
+Connection:
+Reuses an active vCenter connection or prompts to establish one.
 #>
 
 [CmdletBinding(SupportsShouldProcess)]

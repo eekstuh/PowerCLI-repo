@@ -6,17 +6,18 @@
 Displays ESXi vmnic connections to physical switch ports.
 
 .DESCRIPTION
-Queries vSphere network hints for link-up physical NICs named vmnic<number> on
-the selected ESXi hosts. USB network adapters such as vusb0 are excluded. The
-report shows the ESXi cluster, local vSphere switch, physical switch name,
-physical switch port, discovery protocol, and link speed.
+Reports physical switch connections for link-up ESXi adapters named
+vmnic<number>. USB adapters such as vusb0 are excluded.
 
-Physical switch details come from CDP or LLDP advertisements received by the
-ESXi host. If neither protocol supplies neighbor data, the script reports that
-the connection was not advertised instead of attempting to infer it.
+The report includes the cluster, vSphere switch, physical switch name and
+port, discovery protocol, and link speed.
 
-When VMHostName and ClusterName are both omitted, all ESXi hosts visible
-through the selected vCenter connection are included.
+Switch details come from CDP or LLDP advertisements received by each host.
+If neighbor data is unavailable, reports that the connection was not
+advertised rather than inferring a connection.
+
+Use VMHostName or ClusterName to limit the hosts queried. If both are omitted,
+includes all hosts visible through the selected vCenter connection.
 
 .PARAMETER VIServer
 Optional vCenter Server name. If omitted and exactly one active default

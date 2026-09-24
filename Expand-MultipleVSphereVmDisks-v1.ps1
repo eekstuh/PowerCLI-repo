@@ -6,22 +6,28 @@
 Expands a Windows drive to a target VMDK size across multiple vSphere VMs.
 
 .DESCRIPTION
-Processes multiple VM names or wildcard patterns without per-VM approval
-prompts. For each matching VM, the script maps a Windows drive letter to exactly
-one virtual hard disk. It prefers PowerCLI guest-volume mapping, then accepts an
-exact guest serial/VMDK UUID match or a unique disk-capacity match. Ambiguous
-matches are never guessed. It expands the VMDK only when it is smaller than the
-requested target capacity, rescans Windows storage through VMware Tools, and
-extends the mapped partition into all contiguous unallocated space.
+Expands disks on multiple VMs to a requested target capacity without per-VM
+approval prompts. Accepts VM names or wildcard patterns.
 
-If a Windows Recovery partition blocks the extension, the VM is skipped unless
-AllowRecoveryPartitionDeletion is explicitly supplied. With that switch, WinRE
-is disabled and the adjacent Recovery partition is permanently deleted before
-the selected partition is extended. The Recovery partition is not recreated
-and WinRE is not re-enabled. Non-Recovery blocking partitions are never deleted.
+Disk selection:
+Maps the selected Windows drive letter to one VMDK using guest-volume mapping,
+an exact serial/VMDK UUID match, or a unique capacity match. Ambiguous matches
+are rejected.
 
-Each VM is isolated from failures on other VMs. A summary is displayed at the
-end and can optionally be exported to CSV.
+Expansion:
+Expands a VMDK only when it is below the target capacity. Uses VMware Tools
+to rescan Windows storage and extend the mapped partition into contiguous
+unallocated space.
+
+Recovery partitions:
+Skips a blocked extension unless AllowRecoveryPartitionDeletion is supplied.
+That switch permits disabling WinRE and permanently deleting the adjacent
+Recovery partition. The script does not recreate it or re-enable WinRE.
+Other blocking partition types are never deleted.
+
+Results:
+Handles failures separately for each VM. Displays a final summary and can
+export the results to CSV.
 
 .PARAMETER VIServer
 Optional vCenter Server name. If omitted and exactly one active default

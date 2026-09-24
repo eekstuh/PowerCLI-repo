@@ -6,46 +6,45 @@
 Expands one existing virtual disk on a vSphere VM with an enhanced Version 3 console interface.
 
 .DESCRIPTION
-Automatically selects the workflow from the guest OS name reported by VMware Tools.
-Windows Server guests use the SQL volume-label workflow; Windows desktop guests
-use the Windows Workstation workflow. VM names do not determine the workflow.
-Missing or unrecognized guest OS information prevents that VM from continuing.
-If VMware Tools is not running or cannot report a supported Windows OS, the script
-warns the operator and returns to the VM name prompt.
-SQL mode retrieves and maps Windows volume labels before disk selection and reuses
-the guest credentials for partition extension. Failed guest inventory stops the
-workflow before expansion. Missing per-disk mappings or labels are displayed as
-unavailable; disk and Windows partition selection remain manual. Both workflows retain snapshot checks,
-assigned-name lookup, authentication retry, and explicit mutation confirmations.
-Only the SQL workflow disk list includes GuestVolFreeGB from the latest VMware Tools report.
-Multiple mapped volumes are listed separately by path. Missing mapping or free-space
-data displays Unavailable. This column does not require additional guest credentials
-and does not include unpartitioned space on the VMDK.
+Expands a VM's virtual disk in vSphere and optionally extends a Windows
+partition through VMware Tools.
 
-Prompts for a VM name, a disk number, and an amount to add in GB unless those
-values are supplied as parameters. If an entered name starting with 11VMDEV,
-11VMGC, or 11VMHIV is not found exactly, the script searches for an assigned name in the form
-'EnteredName - Assigned User' and requires confirmation before using it. VM name
-wildcard characters (*, ?, [, ]) are rejected. Enter 'exit' at any script prompt
-to cancel the remaining workflow; before confirmation it makes no changes, and
-after VMDK expansion it prevents further guest changes.
-In the Windows Workstation workflow, enter 'skip' at the capacity prompt to leave
-the VMDK unchanged and proceed directly to Windows partition expansion.
-At the Windows partition prompt, enter 'back' to select a different Windows disk.
+Workflow selection:
+Uses the guest OS reported by VMware Tools:
+  - Windows Server: retrieves guest volume labels before disk selection.
+  - Windows Workstation: requests guest credentials at partition extension.
+If Tools is unavailable or the OS is unsupported, returns to VM selection.
 
-This script expands the VMDK only.  It does not extend a Windows partition or
-volume inside the guest OS unless you opt in after the VMDK expansion. The
-guest extension requires VMware Tools and a Windows administrator credential.
-If a Recovery or another partition follows the chosen partition, the script
-stops before extending it. You may explicitly authorize deletion of that
-adjacent blocking partition. Deleting a Recovery partition also disables WinRE.
-Online Windows disks with no partitions are displayed as 'No partitions' and
-cannot be selected for partition extension.
+VM and disk selection:
+Accepts a VM name, disk number, and additional capacity in GB as parameters
+or prompts. Wildcards are rejected. For names beginning with 11VMDEV, 11VMGC,
+or 11VMHIV, can find an assigned-name suffix and asks you to confirm the match.
+Disk and Windows partition selection remain manual.
 
-VMDK expansion stops if the VM has snapshots. Remove the snapshots and wait
-for removal to complete before running the script again. The script checks
-before disk selection and again immediately before expansion; it does not
-remove snapshots. GuestOnly mode skips this vSphere expansion check.
+The Server disk table includes GuestVolFreeGB from the latest Tools report.
+Multiple volumes are shown by path. Missing labels, mappings, or free-space
+data display as unavailable. Free space excludes unpartitioned VMDK space.
+A failed guest inventory stops the Server workflow before disk expansion.
+
+Snapshots:
+Checks for snapshots before disk selection and immediately before expansion.
+Snapshots must be removed before adding VMDK capacity. The script does not
+remove them. GuestOnly mode bypasses the vSphere expansion step and its check.
+
+Windows partition extension:
+Requires administrator credentials and your confirmation. A blocking adjacent
+partition can be deleted only with explicit authorization. Recovery partition
+deletion disables WinRE; the script does not recreate it or re-enable WinRE.
+Online disks without partitions appear as 'No partitions' and cannot be
+selected for partition extension.
+
+Navigation:
+  - Enter 'skip' at the Workstation capacity prompt for guest-only extension.
+  - Enter 'back' at the partition prompt to choose another Windows disk.
+  - Enter 'exit' at a text prompt to cancel the remaining workflow.
+
+Completed changes are not undone when you cancel. Authentication failures
+during initial guest inventory prompt for replacement credentials.
 
 .PARAMETER VIServer
 Optional vCenter Server name. If omitted, the active default PowerCLI
