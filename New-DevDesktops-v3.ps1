@@ -409,7 +409,7 @@ Write-AlignedDetails -Indent 0 -Details ([ordered]@{
     })
 Write-Host ''
 
-$confirmation = (Read-Host 'Create the listed virtual machines? [yes/no]').Trim()
+$confirmation = (Read-Host 'Create the listed virtual machines? [Y/N]').Trim()
 if ($confirmation -notmatch '^(?i:y|yes)$') {
     Write-Host ''
     Write-Host 'Cancelled. No VMs were created.' -ForegroundColor Yellow
