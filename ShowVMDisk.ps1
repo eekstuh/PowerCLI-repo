@@ -2,18 +2,22 @@
 #requires -Modules VMware.VimAutomation.Core
 <#
 .SYNOPSIS
-Lists Windows guest disks and partitions through VMware Tools.
+Lists vSphere virtual disks with Windows guest volume and datastore details.
 
 .DESCRIPTION
 Selects a VM and prompts for Windows administrator credentials. Displays the
-same online-disk and partition columns as Expand-VSphereVmDisk-v3.ps1.
-Disks without partitions appear as 'No partitions'; offline disks are excluded.
+Windows Server (SQL workflow) virtual-disk table from Expand-VSphereVmDisk-v3.ps1:
+Number, Disk, GuestVolumes, HDCapacityGB, GuestVolFreeGB, DatastoreFreeGB,
+DatastoreProvGB, and DatastoreFile.
 
-Reuses a single active vCenter connection or prompts for a server. Refreshes
-the guest storage inventory but does not resize, initialize, or delete disks
-or partitions. Empty passwords and recognized authentication failures prompt
-for credentials again. Enter 'exit' at text prompts or cancel the credential
-dialog to stop.
+Retrieves volume labels through VMware Tools and maps them to virtual disks.
+Free space uses the latest Tools report and excludes unpartitioned space.
+Missing volume mappings display as unavailable; disk labels sort numerically.
+
+Reuses a single active vCenter connection or prompts for a server. This script
+does not resize, initialize, or delete disks or partitions. Empty passwords and
+recognized authentication failures prompt for credentials again. Enter 'exit'
+at text prompts or cancel the credential dialog to stop.
 
 .PARAMETER VMName
 Exact VM inventory name. Wildcards are not accepted.
@@ -125,7 +129,21 @@ catch {
     return $rawOutput.Substring($payloadStart, $endIndex - $payloadStart).Trim()
 }
 
-function Get-WindowsGuestPartitions {
+function ConvertTo-NormalizedWindowsVolumePath {
+    param(
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ''
+    }
+
+    return $Path.Trim().TrimEnd('\').ToUpperInvariant()
+}
+
+function Get-WindowsGuestVolumeLabels {
     param(
         [Parameter(Mandatory)]
         [object]$VM,
@@ -136,53 +154,228 @@ function Get-WindowsGuestPartitions {
 
     $scriptText = @'
 $ErrorActionPreference = 'Stop'
-Update-HostStorageCache
-
-$recoveryGptType = 'de94bba4-06d1-4d40-a16a-bfd50179d6ac'
-$onlineDisks = @(Get-Disk | Where-Object { $_.OperationalStatus -eq 'Online' })
-$allPartitions = @(Get-Partition -ErrorAction SilentlyContinue)
-$partitions = foreach ($disk in $onlineDisks) {
-    $diskPartitions = @($allPartitions | Where-Object { $_.DiskNumber -eq $disk.Number })
-    if ($diskPartitions.Count -eq 0) {
-        [pscustomobject]@{
-            DiskNumber      = $disk.Number
-            DiskSizeGB      = [math]::Round($disk.Size / 1GB, 2)
-            PartitionNumber = $null
-            DriveLetter     = ''
-            Label           = ''
-            SizeGB          = $null
-            AvailableSpaceGB = $null
-            Type            = 'No partitions'
-            IsRecovery      = $false
-        }
+$volumes = foreach ($partition in Get-Partition) {
+    $volume = Get-Volume -Partition $partition -ErrorAction SilentlyContinue
+    if ($null -eq $volume) {
         continue
     }
 
-    foreach ($partition in $diskPartitions) {
-        $volume = Get-Volume -Partition $partition -ErrorAction SilentlyContinue
+    $accessPaths = @(
+        $partition.AccessPaths |
+            Where-Object {
+                -not [string]::IsNullOrWhiteSpace($_) -and
+                $_ -notmatch '^\\\\\?\\Volume\{'
+            }
+    )
+
+    if ($null -ne $volume.DriveLetter) {
+        $accessPaths += "$($volume.DriveLetter):\"
+    }
+
+    foreach ($path in @($accessPaths | Sort-Object -Unique)) {
         [pscustomobject]@{
-            DiskNumber      = $disk.Number
-            DiskSizeGB      = [math]::Round($disk.Size / 1GB, 2)
+            DiskNumber      = $partition.DiskNumber
             PartitionNumber = $partition.PartitionNumber
-            DriveLetter     = if ($null -ne $volume -and $null -ne $volume.DriveLetter) { $volume.DriveLetter } else { '' }
-            Label           = if ($null -ne $volume) { $volume.FileSystemLabel } else { '' }
-            SizeGB          = [math]::Round($partition.Size / 1GB, 2)
-            AvailableSpaceGB = if ($null -ne $volume -and $null -ne $volume.SizeRemaining) { [math]::Round($volume.SizeRemaining / 1GB, 2) } else { $null }
-            Type            = $partition.Type
-            IsRecovery      = ($partition.Type -eq 'Recovery' -or $partition.GptType -eq $recoveryGptType)
+            Path            = $path
+            Label           = [string]$volume.FileSystemLabel
         }
     }
 }
 
-@($partitions) | ConvertTo-Json -Depth 4 -Compress
+[pscustomobject]@{
+    Volumes = @($volumes)
+} | ConvertTo-Json -Depth 4 -Compress
 '@
 
     $json = Invoke-WindowsGuestPowerShell -VM $VM -Credential $Credential -ScriptText $scriptText
-    if ([string]::IsNullOrWhiteSpace($json)) {
-        throw 'The Windows guest did not return any partitions.'
+    $payload = $json | ConvertFrom-Json -ErrorAction Stop
+    return @($payload.Volumes)
+}
+
+function Get-GuestVolumeDisplayForHardDisk {
+    param(
+        [Parameter(Mandatory)]
+        [object]$HardDisk,
+
+        [Parameter()]
+        [System.Collections.IDictionary]$VolumeLabelsByPath
+    )
+
+    if ($null -eq (Get-Command -Name Get-VMGuestDisk -ErrorAction SilentlyContinue)) {
+        return 'Unavailable'
     }
 
-    return @($json | ConvertFrom-Json -ErrorAction Stop)
+    try {
+        $guestDisks = @(Get-VMGuestDisk -HardDisk $HardDisk -ErrorAction Stop)
+    }
+    catch {
+        Write-Warning "Could not retrieve guest volume mapping for '$($HardDisk.Name)': $($_.Exception.Message)"
+        return 'Unavailable'
+    }
+
+    $paths = @(
+        $guestDisks |
+            ForEach-Object { [string]$_.DiskPath } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Sort-Object -Unique
+    )
+    if ($paths.Count -eq 0) {
+        return 'No mapped volume'
+    }
+
+    $displayValues = foreach ($path in $paths) {
+        $label = $null
+        $normalizedPath = ConvertTo-NormalizedWindowsVolumePath -Path $path
+        if ($null -ne $VolumeLabelsByPath -and $VolumeLabelsByPath.Contains($normalizedPath)) {
+            $label = [string]$VolumeLabelsByPath[$normalizedPath]
+            if ([string]::IsNullOrWhiteSpace($label)) {
+                $label = 'No label'
+            }
+        }
+        else {
+            $label = 'Label unavailable'
+        }
+
+        "$path [$label]"
+    }
+
+    return $displayValues -join '; '
+}
+
+function Get-HardDiskGuestFreeSpace {
+    param(
+        [Parameter(Mandatory)][object]$HardDisk,
+        [Parameter(Mandatory)][object]$VM
+    )
+
+    # Match Tools volume paths to this VMDK; never infer Windows disk numbers.
+    try {
+        $mappedVolumes = @(Get-VMGuestDisk -HardDisk $HardDisk -ErrorAction Stop)
+        $paths = @($mappedVolumes | ForEach-Object { [string]$_.DiskPath } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+        if ($paths.Count -eq 0) { return 'Unavailable' }
+        $values = foreach ($path in $paths) {
+            $normalizedPath = ConvertTo-NormalizedWindowsVolumePath -Path $path
+            $matches = @($VM.ExtensionData.Guest.Disk | Where-Object {
+                (ConvertTo-NormalizedWindowsVolumePath -Path $_.DiskPath) -eq $normalizedPath
+            })
+            if ($matches.Count -eq 1 -and $null -ne $matches[0].FreeSpace) {
+                $freeGB = [math]::Round(([decimal]$matches[0].FreeSpace / 1GB), 2)
+                if ($paths.Count -eq 1) { $freeGB } else { "$path [$freeGB]" }
+            }
+            else { "$path [Unavailable]" }
+        }
+        return $values -join '; '
+    }
+    catch { return 'Unavailable' }
+}
+
+function Get-HardDiskDatastoreSpace {
+    param(
+        [Parameter(Mandatory)]
+        [object]$HardDisk,
+
+        [Parameter(Mandatory)]
+        [object]$Server
+    )
+
+    $datastoreReference = $HardDisk.ExtensionData.Backing.Datastore
+    if ($null -eq $datastoreReference -or [string]::IsNullOrWhiteSpace([string]$datastoreReference.Value)) {
+        return $null
+    }
+
+    $datastoreId = "Datastore-$($datastoreReference.Value)"
+    $datastore = Get-Datastore -Id $datastoreId -Server $Server -ErrorAction Stop
+    [decimal]$freeSpaceGB = $datastore.FreeSpaceGB
+    [decimal]$usedSpaceGB = [decimal]$datastore.CapacityGB - $freeSpaceGB
+    [decimal]$uncommittedSpaceGB = 0
+    if ($null -ne $datastore.ExtensionData.Summary.Uncommitted) {
+        $uncommittedSpaceGB = [decimal]$datastore.ExtensionData.Summary.Uncommitted / 1GB
+    }
+
+    return [pscustomobject]@{
+        FreeSpaceGB        = [math]::Round($freeSpaceGB, 2)
+        ProvisionedSpaceGB = [math]::Round($usedSpaceGB + $uncommittedSpaceGB, 2)
+    }
+}
+
+function Show-VirtualDisks {
+    param(
+        [Parameter(Mandatory)]
+        [object]$VM,
+
+        [Parameter(Mandatory)]
+        [object]$Server,
+
+        [Parameter()]
+        [switch]$IncludeGuestVolumes = $true,
+
+        [Parameter()]
+        [System.Collections.IDictionary]$VolumeLabelsByPath,
+
+        [Parameter()]
+        [int]$InitialDiskNumber
+    )
+
+    $disks = @(
+        Get-HardDisk -VM $VM -Server $Server -ErrorAction Stop |
+            Sort-Object `
+                @{ Expression = {
+                    $diskNumberMatch = [regex]::Match([string]$_.Name, '\d+(?=\D*$)')
+                    if ($diskNumberMatch.Success) {
+                        [int]$diskNumberMatch.Value
+                    }
+                    else {
+                        [int]::MaxValue
+                    }
+                } },
+                Name
+    )
+    if ($disks.Count -eq 0) {
+        throw "VM '$($VM.Name)' has no virtual hard disks."
+    }
+
+    Write-Host "`nVirtual disks on '$($VM.Name)':" -ForegroundColor Cyan
+    $diskList = for ($index = 0; $index -lt $disks.Count; $index++) {
+        $datastoreSpace = try {
+            Get-HardDiskDatastoreSpace -HardDisk $disks[$index] -Server $Server
+        }
+        catch {
+            Write-Warning "Could not retrieve datastore space information for '$($disks[$index].Name)': $($_.Exception.Message)"
+            $null
+        }
+
+        $row = [ordered]@{
+            Number                     = $index + 1
+            Disk                       = $disks[$index].Name
+        }
+        if ($IncludeGuestVolumes) {
+            $display = Get-GuestVolumeDisplayForHardDisk -HardDisk $disks[$index] -VolumeLabelsByPath $VolumeLabelsByPath
+            $row['GuestVolumes'] = $display
+        }
+        $row['HDCapacityGB'] = [decimal]$disks[$index].CapacityGB
+        if ($IncludeGuestVolumes) {
+            $row['GuestVolFreeGB'] = Get-HardDiskGuestFreeSpace -HardDisk $disks[$index] -VM $VM
+        }
+        $row += [ordered]@{
+            DatastoreFreeGB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.FreeSpaceGB } else { 'Unavailable' }
+            DatastoreProvGB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.ProvisionedSpaceGB } else { 'Unavailable' }
+            DatastoreFile              = $disks[$index].Filename
+        }
+        [pscustomobject]$row
+    }
+    # Keep the table's leading gap, but own its trailing spacing explicitly.
+    $tableColumns = foreach ($column in $diskList[0].PSObject.Properties.Name) {
+        if ($column -eq 'GuestVolFreeGB') {
+            @{ Name = 'GuestVolFreeGB'; Expression = { $_.GuestVolFreeGB }; Alignment = 'Right' }
+        }
+        else {
+            $column
+        }
+    }
+    Write-Host (($diskList | Format-Table -Property $tableColumns -AutoSize | Out-String).TrimEnd())
+    Write-Host ''
+
 }
 
 try {
@@ -243,8 +436,8 @@ try {
             continue
         }
         try {
-            Write-Host '[i] Fetching Windows guest disks and partition information.' -ForegroundColor Gray
-            $partitions = @(Get-WindowsGuestPartitions -VM $vm -Credential $GuestCredential)
+            Write-Host '[i] Fetching Windows guest volume information.' -ForegroundColor Gray
+            $volumes = @(Get-WindowsGuestVolumeLabels -VM $vm -Credential $GuestCredential)
             break
         }
         catch {
@@ -260,20 +453,14 @@ try {
         }
     }
     Write-Host ''
-    Write-Host "Windows guest disks and partitions on '$($vm.Name)':" -ForegroundColor Cyan
-    if ($partitions.Count -eq 0) {
-        Write-Host 'No online Windows disks were found.'
+    $labels = @{}
+    foreach ($volume in $volumes) {
+        $path = ConvertTo-NormalizedWindowsVolumePath -Path ([string]$volume.Path)
+        if ($path) { $labels[$path] = [string]$volume.Label }
     }
-    else {
-        $partitions | Sort-Object DiskNumber, PartitionNumber |
-            Select-Object @{Name='DiskNum';Expression={$_.DiskNumber}},
-                @{Name='PartitionNum';Expression={$_.PartitionNumber}},
-                DriveLetter, Label,
-                @{Name='PartitionSizeGB';Expression={$_.SizeGB}},
-                @{Name='DiskSpaceFreeGB';Expression={$_.AvailableSpaceGB}},
-                DiskSizeGB, Type, IsRecovery |
-            Format-Table -AutoSize
-    }
+    $vm.ExtensionData.UpdateViewData('Guest')
+    Show-VirtualDisks -VM $vm -Server $server -VolumeLabelsByPath $labels
+
 }
 catch [System.OperationCanceledException] {
     Write-Host 'Cancelled. No disk or partition changes were made.' -ForegroundColor Yellow
