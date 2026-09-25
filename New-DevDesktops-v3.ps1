@@ -17,6 +17,8 @@ issues.
 
 Connection:
 Reuses an active vCenter connection or prompts to establish one.
+Enter 'exit' at any text prompt to cancel before VM creation. Select Cancel
+at the credential prompt to cancel as well.
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -105,6 +107,17 @@ function Write-VCenterConnectionDetails {
     Write-Host ''
 }
 
+function Read-ExitAwareInput {
+    param([Parameter(Mandatory)] [string]$Prompt)
+
+    $answer = [string](Read-Host "$Prompt (enter 'exit' to cancel)")
+    $answer = $answer.Trim()
+    if ($answer -ieq 'exit') {
+        throw [System.OperationCanceledException]::new('Cancelled. No VMs were created.')
+    }
+    return $answer
+}
+
 function Connect-VCenterIfNeeded {
 
     $connectionCandidates = @($global:DefaultVIServers) + @($global:DefaultVIServer)
@@ -121,7 +134,7 @@ function Connect-VCenterIfNeeded {
     Write-Warning 'No active vCenter connection was found.'
     Write-Host ''
     while ($true) {
-        $serverName = (Read-Host 'Enter the vCenter Server host name or IP address').Trim()
+        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
         if ([string]::IsNullOrWhiteSpace($serverName)) {
             Write-Warning 'The vCenter Server host name or IP address cannot be blank.'
             Write-Host ''
@@ -130,9 +143,7 @@ function Connect-VCenterIfNeeded {
 
         $credential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
         if ($null -eq $credential) {
-            Write-Warning 'The credential prompt was cancelled. Enter the vCenter Server host name or IP address to try again.'
-            Write-Host ''
-            continue
+            throw [System.OperationCanceledException]::new('Cancelled. No VMs were created.')
         }
 
         try {
@@ -226,7 +237,7 @@ function Read-VmNamePrefix {
         Write-Host '  5. Custom VM name'
         Write-Host ''
 
-        $selection = (Read-Host 'Select an option (1, 2, 3, 4, or 5)').Trim().ToUpperInvariant()
+        $selection = (Read-ExitAwareInput -Prompt 'Select an option (1, 2, 3, 4, or 5)').ToUpperInvariant()
 
         if ($choices.ContainsKey($selection)) {
             return $choices[$selection]
@@ -240,7 +251,7 @@ function Read-VmNamePrefix {
 function Read-CustomVmName {
 
     while ($true) {
-        $name = (Read-Host 'Enter a custom virtual machine name').Trim()
+        $name = Read-ExitAwareInput -Prompt 'Enter a custom virtual machine name'
 
         if ([string]::IsNullOrWhiteSpace($name)) {
             Write-Warning 'The custom VM name cannot be blank.'
@@ -263,7 +274,7 @@ function Read-VmCount {
     $maximumVmCount = 10
 
     while ($true) {
-        $answer = Read-Host "Enter the number of virtual machines to create (1-$maximumVmCount)"
+        $answer = Read-ExitAwareInput -Prompt "Enter the number of virtual machines to create (1-$maximumVmCount)"
         $count = 0
 
         if ([int]::TryParse($answer, [ref]$count) -and $count -ge 1 -and $count -le $maximumVmCount) {
@@ -353,6 +364,7 @@ function Get-NextVmNames {
 # BUILD PLAN
 # ------------------------------------------------------------
 
+try {
 $vCenterServers = @(Connect-VCenterIfNeeded)
 Write-VCenterConnectionDetails -Server $vCenterServers
 
@@ -409,13 +421,20 @@ Write-AlignedDetails -Indent 0 -Details ([ordered]@{
     })
 Write-Host ''
 
-$confirmation = (Read-Host 'Create the listed virtual machines? [Y/N]').Trim()
+$confirmation = Read-ExitAwareInput -Prompt 'Create the listed virtual machines? [Y/N]'
 if ($confirmation -notmatch '^(?i:y|yes)$') {
     Write-Host ''
     Write-Host 'Cancelled. No VMs were created.' -ForegroundColor Yellow
     return
 }
 Write-Host ''
+
+}
+catch [System.OperationCanceledException] {
+    Write-Host ''
+    Write-Host 'Cancelled. No VMs were created.' -ForegroundColor Yellow
+    return
+}
 
 $template = Get-Template -Name $TemplateName -ErrorAction Stop
 $rootPool = Get-ClusterRootResourcePool -Name $ClusterName
