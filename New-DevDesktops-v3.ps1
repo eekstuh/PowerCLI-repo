@@ -6,8 +6,8 @@
 Creates developer desktop VMs sequentially from the configured template.
 
 Naming:
-Choose 11VMGC, 11VMDEV, 11VMSAS, or a custom VM name. Numbered naming finds the
-highest existing number, including VMs renamed with an assigned-user suffix.
+Choose 11VMDEV, 11VMGC, 11VMSAS, 11VMHIV, or a custom VM name. Numbered naming
+finds the highest existing number, including VMs with an assigned-user suffix.
 
 Provisioning:
 Displays the complete plan and requires confirmation before creating VMs.
@@ -205,31 +205,34 @@ function Get-BestDatastoreFromCluster {
 function Read-VmNamePrefix {
 
     $choices = @{
-        '1'       = '11VMGC'
-        '2'       = '11VMDEV'
+        '1'       = '11VMDEV'
+        '2'       = '11VMGC'
         '3'       = '11VMSAS'
-        '4'       = 'CUSTOM'
+        '4'       = '11VMHIV'
+        '5'       = 'CUSTOM'
         '11VMGC'  = '11VMGC'
         '11VMDEV' = '11VMDEV'
         '11VMSAS' = '11VMSAS'
+        '11VMHIV' = '11VMHIV'
     }
 
     while ($true) {
         Write-Host 'Select a virtual machine naming convention:' -ForegroundColor Cyan
         Write-Host ''
-        Write-Host '  1. 11VMGC'
-        Write-Host '  2. 11VMDEV'
+        Write-Host '  1. 11VMDEV'
+        Write-Host '  2. 11VMGC'
         Write-Host '  3. 11VMSAS'
-        Write-Host '  4. Custom VM name'
+        Write-Host '  4. 11VMHIV'
+        Write-Host '  5. Custom VM name'
         Write-Host ''
 
-        $selection = (Read-Host 'Select an option (1, 2, 3, or 4)').Trim().ToUpperInvariant()
+        $selection = (Read-Host 'Select an option (1, 2, 3, 4, or 5)').Trim().ToUpperInvariant()
 
         if ($choices.ContainsKey($selection)) {
             return $choices[$selection]
         }
 
-        Write-Warning 'Invalid selection. Enter 1, 2, 3, or 4.'
+        Write-Warning 'Invalid selection. Enter 1, 2, 3, 4, or 5.'
         Write-Host ''
     }
 }
