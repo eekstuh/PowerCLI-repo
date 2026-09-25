@@ -108,9 +108,18 @@ function Write-VCenterConnectionDetails {
 }
 
 function Read-ExitAwareInput {
-    param([Parameter(Mandatory)] [string]$Prompt)
+    param(
+        [Parameter(Mandatory)] [string]$Prompt,
+        [string]$Options
+    )
 
-    $answer = [string](Read-Host "$Prompt (enter 'exit' to cancel)")
+    $hint = if ([string]::IsNullOrWhiteSpace($Options)) {
+        "enter 'exit' to cancel"
+    }
+    else {
+        "$Options, or 'exit' to cancel"
+    }
+    $answer = [string](Read-Host "$Prompt ($hint)")
     $answer = $answer.Trim()
     if ($answer -ieq 'exit') {
         throw [System.OperationCanceledException]::new('Cancelled. No VMs were created.')
@@ -237,7 +246,7 @@ function Read-VmNamePrefix {
         Write-Host '  5. Custom VM name'
         Write-Host ''
 
-        $selection = (Read-ExitAwareInput -Prompt 'Select an option (1, 2, 3, 4, or 5)').ToUpperInvariant()
+        $selection = (Read-ExitAwareInput -Prompt 'Select an option' -Options '1, 2, 3, 4, 5').ToUpperInvariant()
 
         if ($choices.ContainsKey($selection)) {
             return $choices[$selection]
@@ -274,7 +283,7 @@ function Read-VmCount {
     $maximumVmCount = 10
 
     while ($true) {
-        $answer = Read-ExitAwareInput -Prompt "Enter the number of virtual machines to create (1-$maximumVmCount)"
+        $answer = Read-ExitAwareInput -Prompt 'Enter the number of virtual machines to create' -Options "1-$maximumVmCount"
         $count = 0
 
         if ([int]::TryParse($answer, [ref]$count) -and $count -ge 1 -and $count -le $maximumVmCount) {
