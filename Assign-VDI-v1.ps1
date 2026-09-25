@@ -49,7 +49,7 @@ Optional Active Directory domain controller or domain name used for user
 lookups. If omitted, the ActiveDirectory module uses its default domain.
 
 .PARAMETER NamingConvention
-Virtual machine assignment option: 11VMGC, 11VMDEV, 11VMSAS, SPECIFIC,
+Virtual machine assignment option: 11VMDEV, 11VMGC, 11VMSAS, 11VMHIV, SPECIFIC,
 REASSIGN, or EXISTING. SPECIFIC assigns an exact unassigned VM name instead of
 selecting from the numbered pool. REASSIGN grants the new user RDP access and
 renames an already-assigned VM without removing the previous user's GPO-managed
@@ -130,7 +130,7 @@ param(
     [string]$ADServer,
 
     [Parameter(ParameterSetName = 'Interactive')]
-    [ValidateSet('11VMGC', '11VMDEV', '11VMSAS', 'SPECIFIC', 'CUSTOM', 'REASSIGN', 'EXISTING', 'ASSIGNED')]
+    [ValidateSet('11VMDEV', '11VMGC', '11VMSAS', '11VMHIV', 'SPECIFIC', 'CUSTOM', 'REASSIGN', 'EXISTING', 'ASSIGNED')]
     [string]$NamingConvention,
 
     [Parameter(ParameterSetName = 'Interactive')]
@@ -370,32 +370,35 @@ function Read-NamingConvention {
     while ($true) {
         Write-Host "`nSelect a VDI assignment option:" -ForegroundColor Cyan
         Write-Host ''
-        Write-Host '  1. 11VMGC'
-        Write-Host '  2. 11VMDEV'
+        Write-Host '  1. 11VMDEV'
+        Write-Host '  2. 11VMGC'
         Write-Host '  3. 11VMSAS'
-        Write-Host '  4. Specify VM name'
-        Write-Host '  5. Reassign an assigned VDI to a different user'
-        Write-Host '  6. Add an additional user to already assigned VDI (VM will not be renamed)'
+        Write-Host '  4. 11VMHIV'
+        Write-Host '  5. Specify VM name'
+        Write-Host '  6. Reassign an assigned VDI to a different user'
+        Write-Host '  7. Add an additional user to already assigned VDI (VM will not be renamed)'
         Write-Host ''
 
-        $selection = Read-ExitAwareInput -Prompt 'Select an option (1, 2, 3, 4, 5, or 6)'
+        $selection = Read-ExitAwareInput -Prompt 'Select an option (1, 2, 3, 4, 5, 6, or 7)'
         Stop-IfExitRequested
         switch ($selection.Trim().ToUpperInvariant()) {
-            '1'       { return '11VMGC' }
+            '2'       { return '11VMGC' }
             '11VMGC'  { return '11VMGC' }
-            '2'       { return '11VMDEV' }
+            '1'       { return '11VMDEV' }
             '11VMDEV' { return '11VMDEV' }
             '3'       { return '11VMSAS' }
             '11VMSAS' { return '11VMSAS' }
-            '4'        { return 'SPECIFIC' }
+            '4'        { return '11VMHIV' }
+            '11VMHIV'  { return '11VMHIV' }
+            '5'        { return 'SPECIFIC' }
             'SPECIFIC' { return 'SPECIFIC' }
             'CUSTOM'   { return 'SPECIFIC' }
-            '5'        { return 'REASSIGN' }
+            '6'        { return 'REASSIGN' }
             'REASSIGN' { return 'REASSIGN' }
-            '6'        { return 'EXISTING' }
+            '7'        { return 'EXISTING' }
             'EXISTING' { return 'EXISTING' }
             'ASSIGNED' { return 'EXISTING' }
-            default { Write-Warning 'Select option 1, 2, 3, 4, 5, or 6.' }
+            default { Write-Warning 'Select option 1, 2, 3, 4, 5, 6, or 7.' }
         }
     }
 }
@@ -718,8 +721,8 @@ function Get-AssignmentWorkItems {
             elseif ($prefix -eq 'ASSIGNED') {
                 $prefix = 'EXISTING'
             }
-            if ($prefix -notin @('11VMGC', '11VMDEV', '11VMSAS', 'SPECIFIC', 'REASSIGN', 'EXISTING')) {
-                throw "CSV row $rowNumber has an invalid NamingConvention '$($row.NamingConvention)'. Use 11VMGC, 11VMDEV, 11VMSAS, SPECIFIC, REASSIGN, or EXISTING."
+            if ($prefix -notin @('11VMDEV', '11VMGC', '11VMSAS', '11VMHIV', 'SPECIFIC', 'REASSIGN', 'EXISTING')) {
+                throw "CSV row $rowNumber has an invalid NamingConvention '$($row.NamingConvention)'. Use 11VMDEV, 11VMGC, 11VMSAS, 11VMHIV, SPECIFIC, REASSIGN, or EXISTING."
             }
 
             $requestedVMName = if ($prefix -eq 'SPECIFIC') {
