@@ -656,7 +656,45 @@ function Resolve-InteractiveActiveDirectoryUser {
     }
 }
 
+function Resolve-SpecificAssignmentVMName {
+    param(
+        [Parameter(Mandatory)] [string]$InitialVMName,
+        [Parameter(Mandatory)] [object]$Server,
+        [Parameter(Mandatory)] [object]$Cluster
+    )
+
+    $requestedName = $InitialVMName
+    while ($true) {
+        $vmMatches = @(Get-VM -Location $Cluster -Server $Server -ErrorAction Stop |
+            Where-Object { $_.Name -ieq $requestedName })
+        $message = $null
+        if ($vmMatches.Count -eq 0) {
+            $message = "VM '$requestedName' was not found in cluster '$($Cluster.Name)'."
+        }
+        elseif ($vmMatches.Count -gt 1) {
+            $message = "More than one VM is named '$requestedName' in cluster '$($Cluster.Name)'."
+        }
+        elseif ($vmMatches[0].Name -match '\s+-\s+.+$') {
+            $message = "VM '$($vmMatches[0].Name)' already appears to be assigned."
+        }
+        elseif ([string]$vmMatches[0].PowerState -ne 'PoweredOn') {
+            $message = "VM '$($vmMatches[0].Name)' is not powered on."
+        }
+        else {
+            return [string]$vmMatches[0].Name
+        }
+
+        Write-Warning $message
+        Write-Host ''
+        $requestedName = Resolve-RequiredText -InitialValue '' -WasSupplied $false -Prompt 'Enter another exact VM name to assign' -FieldName 'Virtual machine name' -RejectAssignmentDelimiter
+    }
+}
+
 function Get-AssignmentWorkItems {
+    param(
+        [Parameter(Mandatory)] [object]$Server,
+        [Parameter(Mandatory)] [object]$Cluster
+    )
     if ($script:InvocationParameterSet -eq 'Interactive') {
         $selectedPrefix = Read-NamingConvention
         Write-Host ''
@@ -674,6 +712,9 @@ function Get-AssignmentWorkItems {
         }
         if ($selectedPrefix -in @('SPECIFIC', 'REASSIGN', 'EXISTING') -and -not $vmNameWasSupplied) {
             Write-Host ''
+        }
+        if ($selectedPrefix -eq 'SPECIFIC') {
+            $requestedVMName = Resolve-SpecificAssignmentVMName -InitialVMName $requestedVMName -Server $Server -Cluster $Cluster
         }
         $resolvedADUser = Resolve-InteractiveActiveDirectoryUser
 
@@ -1603,7 +1644,7 @@ try {
     $continueAssignmentSession = $true
 
     while ($continueAssignmentSession) {
-        $workItems = @(Get-AssignmentWorkItems)
+        $workItems = @(Get-AssignmentWorkItems -Server $server -Cluster $cluster)
 
         for ($index = 0; $index -lt $workItems.Count; $index++) {
             $workItem = $workItems[$index]
