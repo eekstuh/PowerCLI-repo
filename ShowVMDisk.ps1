@@ -25,10 +25,10 @@ Optional vCenter hostname.
 Optional Windows guest administrator credential.
 
 .EXAMPLE
-.\Get-WindowsVmDisks-v1.ps1
+.\ShowVMDisk.ps1
 
 .EXAMPLE
-.\Get-WindowsVmDisks-v1.ps1 -VMName '11VMDEV501 - John Smith'
+.\ShowVMDisk.ps1 -VMName '11VMDEV501 - John Smith'
 #>
 [CmdletBinding()]
 param(
