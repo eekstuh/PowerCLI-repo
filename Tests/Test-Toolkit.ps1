@@ -153,6 +153,15 @@ function Reset-GuestMocks {
 }
 $credential = [pscredential]::new('tester',(ConvertTo-SecureString 'not-a-real-password' -AsPlainText -Force))
 try {
+    Test-Case 'All disk-history workflows default to C:\Temp and allow an override' {
+        foreach ($file in @('Add-vHardware-v1.ps1','Expand-MultipleVSphereVmDisks-v1.ps1','Expand-VSphereVmDisk-v3.ps1','New-DevDesktops-v3.ps1','ShowSQLDisk.ps1')) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $file),[ref]$null,[ref]$null)
+            $parameter = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'LogPath' }
+            Assert-True ($parameter.DefaultValue.SafeGetValue() -eq 'C:\Temp\DiskOperations.csv') "$file has an incorrect default log path."
+            $binding = [scriptblock]::Create('param(' + $parameter.Extent.Text + ') $LogPath')
+            Assert-True ((& $binding -LogPath 'D:\Audit\Custom.csv') -eq 'D:\Audit\Custom.csv') "$file does not preserve a custom log path."
+        }
+    }
     Test-Case 'Module and embedded guest scripts parse' {
         $files = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File) + @(Get-ChildItem -LiteralPath (Join-Path $root 'Modules') -Filter '*.psm1' -File)
         foreach ($file in $files) {

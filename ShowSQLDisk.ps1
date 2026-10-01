@@ -29,8 +29,8 @@ Optional vCenter hostname.
 Optional Windows guest administrator credential.
 
 .PARAMETER LogPath
-CSV path for vSphere disk history. Defaults to Logs\DiskOperations.csv beside
-the script. Use a secured shared path for history across operators.
+CSV path for vSphere disk history. Defaults to C:\Temp\DiskOperations.csv.
+Use a secured shared path for history across operators.
 
 .PARAMETER Credential
 Optional vCenter credential used only when a new connection is required.
@@ -50,7 +50,7 @@ param(
     [string]$VMName,
     [string]$VIServer,
     [pscredential]$GuestCredential,
-    [string]$LogPath = (Join-Path $PSScriptRoot 'Logs\DiskOperations.csv'),
+    [string]$LogPath = 'C:\Temp\DiskOperations.csv',
     [pscredential]$Credential,
     [string]$CsvReportPath
 )

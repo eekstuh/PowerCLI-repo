@@ -22,8 +22,8 @@ Reuses an active vCenter connection or prompts to establish one.
 Enter 'exit' at any text prompt to cancel before VM creation. Select Cancel
 at the credential prompt to cancel as well.
 .PARAMETER LogPath
-CSV path for vSphere disk history. Defaults to Logs\DiskOperations.csv beside
-the script. Use a secured shared path for history across operators.
+CSV path for vSphere disk history. Defaults to C:\Temp\DiskOperations.csv.
+Use a secured shared path for history across operators.
 
 .PARAMETER MinimumDatastoreFreePercent
 Warn when datastore free space is below this percentage. Default: 10.
@@ -55,7 +55,7 @@ param(
     [string]$FolderName           = 'Windows Workstations',
 
     [switch]$PowerOnAfterCreate = $false,
-    [string]$LogPath = (Join-Path $PSScriptRoot 'Logs\DiskOperations.csv'),
+    [string]$LogPath = 'C:\Temp\DiskOperations.csv',
     [ValidateRange(0,100)][decimal]$MinimumDatastoreFreePercent = 10,
     [ValidateRange(0,1000000000)][decimal]$MinimumDatastoreFreeGB = 50,
     [ValidateRange(0,1000000)][decimal]$MaximumDatastoreProvisionedPercent = 150,

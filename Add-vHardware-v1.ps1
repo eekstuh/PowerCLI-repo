@@ -60,8 +60,8 @@ lists the VM host's accessible datastores and prompts for a selection.
 Storage format for a new disk: Thin, Thick, or EagerZeroedThick. Default: Thin.
 
 .PARAMETER LogPath
-CSV path for vSphere disk history. Defaults to Logs\DiskOperations.csv beside
-the script. Use a secured shared path for history across operators.
+CSV path for vSphere disk history. Defaults to C:\Temp\DiskOperations.csv.
+Use a secured shared path for history across operators.
 
 .PARAMETER MinimumDatastoreFreePercent
 Warn when datastore free space is below this percentage. Default: 10.
@@ -165,7 +165,7 @@ param(
     [Parameter()]
     [ValidateSet('Thin', 'Thick', 'EagerZeroedThick')]
     [string]$StorageFormat = 'Thin',
-    [string]$LogPath = (Join-Path $PSScriptRoot 'Logs\DiskOperations.csv'),
+    [string]$LogPath = 'C:\Temp\DiskOperations.csv',
     [ValidateRange(0,100)][decimal]$MinimumDatastoreFreePercent = 10,
     [ValidateRange(0,1000000000)][decimal]$MinimumDatastoreFreeGB = 50,
     [ValidateRange(0,1000000)][decimal]$MaximumDatastoreProvisionedPercent = 150

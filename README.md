@@ -44,7 +44,9 @@ partition selection/deletion. It cannot predict all runtime failures.
 
 ## vSphere disk history
 
-The expansion, hardware, and desktop-creation scripts write **Logs/DiskOperations.csv**.
+The expansion, hardware, and desktop-creation scripts default to **C:\Temp\DiskOperations.csv**.
+The folder is created automatically when the first log record is written.
+ShowSQLDisk reads history from the same default path. Existing logs are not moved.
 Use the same -LogPath on each workstation for shared history:
 
 ```powershell
