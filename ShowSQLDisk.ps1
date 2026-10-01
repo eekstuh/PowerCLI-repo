@@ -28,6 +28,17 @@ Optional vCenter hostname.
 .PARAMETER GuestCredential
 Optional Windows guest administrator credential.
 
+.PARAMETER LogPath
+CSV path for vSphere disk history. Defaults to Logs\DiskOperations.csv beside
+the script. Use a secured shared path for history across operators.
+
+.PARAMETER Credential
+Optional vCenter credential used only when a new connection is required.
+
+.PARAMETER CsvReportPath
+Export the disk inventory to a new CSV file. The parent folder must exist.
+Existing reports are not overwritten.
+
 .EXAMPLE
 .\ShowSQLDisk.ps1
 
@@ -38,8 +49,15 @@ Optional Windows guest administrator credential.
 param(
     [string]$VMName,
     [string]$VIServer,
-    [pscredential]$GuestCredential
+    [pscredential]$GuestCredential,
+    [string]$LogPath = (Join-Path $PSScriptRoot 'Logs\DiskOperations.csv'),
+    [pscredential]$Credential,
+    [string]$CsvReportPath
 )
+
+Import-Module (Join-Path $PSScriptRoot 'Modules\PowerCLI.Toolkit.psm1') -Force -ErrorAction Stop
+Write-Host ("[i] PowerCLI Toolkit {0}" -f (Get-ToolkitVersion)) -ForegroundColor Gray
+
 
 function Read-InventoryInput {
     param([string]$Prompt)
@@ -48,85 +66,11 @@ function Read-InventoryInput {
     return $answer
 }
 
-function Read-GuestCredential {
-    while ($true) {
-        $name = Read-InventoryInput 'Enter the Windows guest administrator user name'
-        if ([string]::IsNullOrWhiteSpace($name)) {
-            Write-Warning 'Enter a username.'
-            continue
-        }
-        $credential = Get-Credential -UserName $name -Message 'Enter the Windows guest administrator password. Select Cancel to stop.'
-        if ($null -eq $credential) { throw [OperationCanceledException]::new() }
-        if ($credential.Password.Length -eq 0) {
-            Write-Warning 'The Windows guest password cannot be empty. Enter the credentials again.'
-            continue
-        }
-        return $credential
-    }
-}
+function Read-GuestCredential { return Read-ToolkitGuestCredential }
 
 function Invoke-WindowsGuestPowerShell {
-    param(
-        [Parameter(Mandatory)]
-        [object]$VM,
-
-        [Parameter(Mandatory)]
-        [System.Management.Automation.PSCredential]$Credential,
-
-        [Parameter(Mandatory)]
-        [string]$ScriptText
-    )
-
-    # Keep this wrapper compact. Invoke-VMScript transports Windows PowerShell
-    # through VMware Tools and large encoded command lines can fail before the
-    # guest script starts, returning exit code 1 with no ScriptOutput.
-    $wrappedScript = @'
-try {
-    $guestResults = @(& {
-__GUEST_SCRIPT_BODY__
-    })
-    if ($guestResults.Count -eq 0) {
-        throw 'Guest operation returned no result payload.'
-    }
-    Write-Output '__VMWARE_GUEST_PAYLOAD_BEGIN__'
-    Write-Output ([string]$guestResults[-1]).Trim()
-    Write-Output '__VMWARE_GUEST_PAYLOAD_END__'
-}
-catch {
-    Write-Output ("Guest exception: " + $_.Exception.Message + [Environment]::NewLine + $_.InvocationInfo.PositionMessage)
-    exit 1
-}
-'@
-    $wrappedScript = $wrappedScript.Replace('__GUEST_SCRIPT_BODY__', $ScriptText)
-
-    $result = Invoke-VMScript -VM $VM -GuestCredential $Credential -ScriptType Powershell -ScriptText $wrappedScript -ErrorAction Stop
-    if ($result.ExitCode -ne 0) {
-        $errorDetails = [string]$result.ScriptOutput
-        if ([string]::IsNullOrWhiteSpace($errorDetails)) {
-            $errorDetails = 'VMware Tools returned no guest error details.'
-        }
-        throw "The Windows guest script failed with exit code $($result.ExitCode): $($errorDetails.Trim())"
-    }
-
-    $rawOutput = [string]$result.ScriptOutput
-    $beginMarker = '__VMWARE_GUEST_PAYLOAD_BEGIN__'
-    $endMarker = '__VMWARE_GUEST_PAYLOAD_END__'
-    $beginIndex = $rawOutput.LastIndexOf($beginMarker, [System.StringComparison]::Ordinal)
-    if ($beginIndex -lt 0) {
-        $displayOutput = $rawOutput.Trim()
-        if ($displayOutput.Length -gt 2000) {
-            $displayOutput = $displayOutput.Substring(0, 2000) + '...'
-        }
-        throw "The Windows guest returned an unframed result. Guest output: $displayOutput"
-    }
-
-    $payloadStart = $beginIndex + $beginMarker.Length
-    $endIndex = $rawOutput.IndexOf($endMarker, $payloadStart, [System.StringComparison]::Ordinal)
-    if ($endIndex -lt 0) {
-        throw 'The Windows guest result was incomplete: the payload end marker was missing.'
-    }
-
-    return $rawOutput.Substring($payloadStart, $endIndex - $payloadStart).Trim()
+    param([object]$VM, [pscredential]$Credential, [string]$ScriptText, [switch]$ReadOnly)
+    return Invoke-ToolkitGuestPowerShell -VM $VM -Credential $Credential -ScriptText $ScriptText -Server $server -ReadOnly:$ReadOnly -Preview:$WhatIfPreference
 }
 
 function ConvertTo-NormalizedWindowsVolumePath {
@@ -187,7 +131,7 @@ $volumes = foreach ($partition in Get-Partition) {
 } | ConvertTo-Json -Depth 4 -Compress
 '@
 
-    $json = Invoke-WindowsGuestPowerShell -VM $VM -Credential $Credential -ScriptText $scriptText
+    $json = Invoke-WindowsGuestPowerShell -VM $VM -Credential $Credential -ScriptText $scriptText -ReadOnly
     $payload = $json | ConvertFrom-Json -ErrorAction Stop
     return @($payload.Volumes)
 }
@@ -364,6 +308,11 @@ function Show-VirtualDisks {
         }
         [pscustomobject]$row
     }
+    if (-not [string]::IsNullOrWhiteSpace($CsvReportPath)) {
+        $exportRows = @($diskList | Select-Object @{Name='CollectedUTC';Expression={[datetime]::UtcNow.ToString('o')}},
+            @{Name='VCenter';Expression={$Server.Name}}, @{Name='VMName';Expression={$VM.Name}}, *)
+        Export-ToolkitReport -Path $CsvReportPath -Rows $exportRows
+    }
     # Keep the table's leading gap, but own its trailing spacing explicitly.
     $tableColumns = foreach ($column in $diskList[0].PSObject.Properties.Name) {
         if ($column -eq 'GuestVolFreeGB') {
@@ -379,21 +328,7 @@ function Show-VirtualDisks {
 }
 
 try {
-    if ([string]::IsNullOrWhiteSpace($VIServer)) {
-        $connections = @(@($global:DefaultVIServers) + @($global:DefaultVIServer) |
-            Where-Object { $null -ne $_ -and $_.IsConnected } |
-            Sort-Object Name -Unique)
-        if ($connections.Count -eq 1) { $server = $connections[0] }
-        else {
-            do { $VIServer = Read-InventoryInput 'Enter the vCenter Server host name' }
-            while ([string]::IsNullOrWhiteSpace($VIServer))
-        }
-    }
-    if (-not [string]::IsNullOrWhiteSpace($VIServer)) {
-        $credential = Get-Credential -Message "Enter credentials for vCenter '$VIServer'. Select Cancel to stop."
-        if ($null -eq $credential) { throw [OperationCanceledException]::new() }
-        $server = Connect-VIServer -Server $VIServer -Credential $credential -ErrorAction Stop
-    }
+    $server = Connect-ToolkitVCenter -Name $VIServer -Credential $Credential
     Write-Host ''
     Write-Host 'Connected to vCenter Server:' -ForegroundColor Cyan
     Write-Host ("  Host name : {0}" -f $server.Name)
@@ -427,6 +362,8 @@ try {
         }
         break
     }
+
+    Show-ToolkitDiskHistory -VM $vm -Server $server -Path $LogPath
 
     while ($true) {
         if ($null -eq $GuestCredential) { $GuestCredential = Read-GuestCredential }

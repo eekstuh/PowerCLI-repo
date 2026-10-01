@@ -68,6 +68,19 @@ the Recovery partition. It never authorizes deletion of other partition types.
 .PARAMETER CsvReportPath
 Optional path for the final per-VM result report. Its parent folder must exist.
 
+.PARAMETER LogPath
+CSV path for vSphere disk history. Defaults to Logs\DiskOperations.csv beside
+the script. Use a secured shared path for history across operators.
+
+.PARAMETER MinimumDatastoreFreePercent
+Warn when datastore free space is below this percentage. Default: 10.
+
+.PARAMETER MinimumDatastoreFreeGB
+Warn when datastore free space is below this capacity in GB. Default: 50.
+
+.PARAMETER MaximumDatastoreProvisionedPercent
+Warn when estimated provisioned capacity exceeds this percentage. Default: 150.
+
 .EXAMPLE
 .\Expand-MultipleVSphereVmDisks-v1.ps1 -VMName SQL01,SQL02,SQL03 -DriveLetter D -TargetCapacityGB 500 -GuestCredential (Get-Credential)
 
@@ -80,7 +93,7 @@ Optional path for the final per-VM result report. Its parent folder must exist.
 .EXAMPLE
 .\Expand-MultipleVSphereVmDisks-v1.ps1 -VMName APP01,APP02 -DriveLetter C -TargetCapacityGB 250 -GuestCredential (Get-Credential) -AllowRecoveryPartitionDeletion
 #>
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter()]
     [string]$VIServer,
@@ -126,8 +139,16 @@ param(
     [switch]$AllowRecoveryPartitionDeletion,
 
     [Parameter()]
-    [string]$CsvReportPath
+    [string]$CsvReportPath,
+    [string]$LogPath = (Join-Path $PSScriptRoot 'Logs\DiskOperations.csv'),
+    [ValidateRange(0,100)][decimal]$MinimumDatastoreFreePercent = 10,
+    [ValidateRange(0,1000000000)][decimal]$MinimumDatastoreFreeGB = 50,
+    [ValidateRange(0,1000000)][decimal]$MaximumDatastoreProvisionedPercent = 150
 )
+
+Import-Module (Join-Path $PSScriptRoot 'Modules\PowerCLI.Toolkit.psm1') -Force -ErrorAction Stop
+Write-Host ("[i] PowerCLI Toolkit {0}" -f (Get-ToolkitVersion)) -ForegroundColor Gray
+
 
 $ErrorActionPreference = 'Stop'
 $script:ExitRequested = $false
@@ -167,26 +188,8 @@ function Stop-IfExitRequested {
 }
 
 function Write-AlignedDetails {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [System.Collections.IDictionary]$Details,
-
-        [Parameter()]
-        [ValidateRange(0, 40)]
-        [int]$Indent = 2
-    )
-
-    if ($Details.Count -eq 0) {
-        return
-    }
-
-    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
-    $prefix = ' ' * $Indent
-    foreach ($labelObject in $Details.Keys) {
-        $label = [string]$labelObject
-        Write-Host ('{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject])
-    }
+    param([System.Collections.IDictionary]$Details, [int]$Indent = 2, [hashtable]$Colors = @{})
+    Write-ToolkitDetails -Details $Details -Indent $Indent -Colors $Colors
 }
 
 function Write-VCenterConnectionDetails {
@@ -228,39 +231,7 @@ function Write-VCenterConnectionDetails {
 }
 
 function Get-VCenterConnection {
-    $connections = @()
-    foreach ($connection in (@($global:DefaultVIServer) + @($global:DefaultVIServers))) {
-        if ($null -eq $connection) { continue }
-        if ($connection.PSObject.Properties.Name -contains 'IsConnected' -and -not $connection.IsConnected) { continue }
-        if (@($connections | Where-Object { $_.Name -ieq $connection.Name }).Count -eq 0) {
-            $connections += $connection
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($VIServer) -and $connections.Count -eq 1) {
-        return $connections[0]
-    }
-
-    $serverName = $VIServer
-    while ([string]::IsNullOrWhiteSpace($serverName)) {
-        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
-        Stop-IfExitRequested
-        if ([string]::IsNullOrWhiteSpace($serverName)) {
-            Write-Warning 'A vCenter Server host name or IP address is required.'
-            Write-Host ''
-        }
-    }
-
-    $match = @($connections | Where-Object { $_.Name -ieq $serverName })
-    if ($match.Count -gt 0) { return $match[0] }
-    $connectionCredential = $Credential
-    if ($null -eq $connectionCredential) {
-        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
-        if ($null -eq $connectionCredential) {
-            throw 'The vCenter credential prompt was cancelled.'
-        }
-    }
-    return Connect-VIServer -Server $serverName -Credential $connectionCredential -ErrorAction Stop
+    return Connect-ToolkitVCenter -Name $VIServer -Credential $Credential
 }
 
 function ConvertTo-NormalizedDriveLetter {
@@ -363,103 +334,15 @@ function Get-WorkItems {
 
 function Get-ResolvedGuestCredential {
     if ($null -ne $GuestCredential) { return $GuestCredential }
-    $credential = Get-Credential -Message 'Enter a Windows guest administrator credential to use for this virtual machine batch.'
-    if ($null -eq $credential) {
-        throw 'Windows guest credentials are required. No changes were made.'
-    }
-    return $credential
+    return Read-ToolkitGuestCredential
 }
 
-function Invoke-GuestScriptWithCredentialRetry {
-    param(
-        [Parameter(Mandatory)] [object]$VM,
-        [Parameter(Mandatory)] [System.Management.Automation.PSCredential]$Credential,
-        [Parameter(Mandatory)] [string]$ScriptText
-    )
 
-    if ($null -eq (Get-Variable -Name RejectedGuestCredentials -Scope Script -ErrorAction SilentlyContinue)) {
-        $script:RejectedGuestCredentials = [System.Collections.ArrayList]::new()
-    }
-    # Reuse a replacement for credentials already rejected during this session.
-    if ($null -ne $script:RejectedGuestCredentials -and
-        $script:RejectedGuestCredentials.Contains($Credential)) {
-        $Credential = $script:ResolvedGuestCredential
-    }
-
-    while ($true) {
-        $retryMessage = $null
-        if ($Credential.Password.Length -eq 0) {
-            $retryMessage = 'The Windows guest password cannot be empty. Enter the username and password again.'
-        }
-        else {
-            try {
-                return Invoke-VMScript -VM $VM -GuestCredential $Credential -ScriptType Powershell -ScriptText $ScriptText -ErrorAction Stop
-            }
-            catch {
-                if ($_.Exception.Message -notmatch '(?i)vix error codes\s*=\s*\(\s*3033\s*,\s*0\s*\)') {
-                    throw
-                }
-                $retryMessage = 'VMware Tools rejected the Windows guest credentials (VIX 3033). Enter the username and a non-empty password again.'
-            }
-        }
-
-        Write-Warning $retryMessage
-        if ($null -eq $script:RejectedGuestCredentials) {
-            $script:RejectedGuestCredentials = [System.Collections.ArrayList]::new()
-        }
-        [void]$script:RejectedGuestCredentials.Add($Credential)
-        $replacement = Get-Credential -UserName $Credential.UserName -Message 'Enter Windows guest administrator credentials. Select Cancel to cancel this guest operation.'
-        if ($null -eq $replacement) {
-            throw 'Windows guest credential entry was cancelled. The guest operation was not retried.'
-        }
-        $Credential = $replacement
-        $script:ResolvedGuestCredential = $replacement
-    }
-}
 
 function Invoke-WindowsGuestPowerShell {
-    param(
-        [Parameter(Mandatory)] [object]$VM,
-        [Parameter(Mandatory)] [System.Management.Automation.PSCredential]$Credential,
-        [Parameter(Mandatory)] [string]$ScriptText
-    )
-
-    $wrapper = @'
-try {
-    $guestResults = @(& {
-__GUEST_SCRIPT_BODY__
-    })
-    if ($guestResults.Count -eq 0) { throw 'Guest operation returned no result payload.' }
-    Write-Output '__VMWARE_GUEST_PAYLOAD_BEGIN__'
-    Write-Output ([string]$guestResults[-1]).Trim()
-    Write-Output '__VMWARE_GUEST_PAYLOAD_END__'
-}
-catch {
-    Write-Output ("Guest exception: " + $_.Exception.Message + [Environment]::NewLine + $_.InvocationInfo.PositionMessage)
-    exit 1
-}
-'@
-    $wrapper = $wrapper.Replace('__GUEST_SCRIPT_BODY__', $ScriptText)
-    $result = Invoke-GuestScriptWithCredentialRetry -VM $VM -Credential $Credential -ScriptText $wrapper
-    if ($result.ExitCode -ne 0) {
-        $details = [string]$result.ScriptOutput
-        if ([string]::IsNullOrWhiteSpace($details)) { $details = 'VMware Tools returned no guest error details.' }
-        throw "The Windows guest script failed with exit code $($result.ExitCode): $($details.Trim())"
-    }
-
-    $output = [string]$result.ScriptOutput
-    $beginMarker = '__VMWARE_GUEST_PAYLOAD_BEGIN__'
-    $endMarker = '__VMWARE_GUEST_PAYLOAD_END__'
-    $begin = $output.LastIndexOf($beginMarker, [System.StringComparison]::Ordinal)
-    if ($begin -lt 0) {
-        $display = $output.Trim()
-        if ($display.Length -gt 2000) { $display = $display.Substring(0, 2000) + '...' }
-        throw "The Windows guest returned an unframed result. Guest output: $display"
-    }
-    $payloadStart = $begin + $beginMarker.Length
-    $end = $output.IndexOf($endMarker, $payloadStart, [System.StringComparison]::Ordinal)
-    if ($end -lt 0) { throw 'The Windows guest result was incomplete: the payload end marker was missing.' }
-    return $output.Substring($payloadStart, $end - $payloadStart).Trim()
+    param([object]$VM, [pscredential]$Credential, [string]$ScriptText, [switch]$ReadOnly)
+    $ScriptText = $ScriptText.Replace('__REFRESH_STORAGE__', $(if ($WhatIfPreference) { '$false' } else { '$true' }))
+    return Invoke-ToolkitGuestPowerShell -VM $VM -Credential $Credential -ScriptText $ScriptText -Server $server -ReadOnly:$ReadOnly -Preview:$WhatIfPreference
 }
 
 function Get-WindowsDriveState {
@@ -473,7 +356,7 @@ function Get-WindowsDriveState {
 $ErrorActionPreference = 'Stop'
 $driveLetter = '__DRIVE_LETTER__'
 $recoveryGptType = 'de94bba4-06d1-4d40-a16a-bfd50179d6ac'
-Update-HostStorageCache
+if (__REFRESH_STORAGE__) { Update-HostStorageCache }
 $partitions = @(Get-Partition -DriveLetter $driveLetter -ErrorAction Stop)
 if ($partitions.Count -ne 1) { throw "Drive $driveLetter`: maps to $($partitions.Count) partitions; exactly one is required." }
 $partition = $partitions[0]
@@ -507,7 +390,7 @@ if ($nextPartitions.Count -eq 1) {
 } | ConvertTo-Json -Depth 4 -Compress
 '@
     $scriptText = $scriptText.Replace('__DRIVE_LETTER__', $DriveLetter)
-    $json = Invoke-WindowsGuestPowerShell -VM $VM -Credential $Credential -ScriptText $scriptText
+    $json = Invoke-WindowsGuestPowerShell -VM $VM -Credential $Credential -ScriptText $scriptText -ReadOnly
     return $json | ConvertFrom-Json -ErrorAction Stop
 }
 
@@ -521,7 +404,7 @@ function Resize-WindowsDrivePartition {
     $scriptText = @'
 $ErrorActionPreference = 'Stop'
 $driveLetter = '__DRIVE_LETTER__'
-Update-HostStorageCache
+if (__REFRESH_STORAGE__) { Update-HostStorageCache }
 $partition = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop
 $supported = Get-PartitionSupportedSize -DiskNumber $partition.DiskNumber -PartitionNumber $partition.PartitionNumber
 if (($supported.SizeMax - $partition.Size) -le 1MB) { throw 'There is no contiguous unallocated space after the selected partition.' }
@@ -586,7 +469,7 @@ delete partition override
     if ($LASTEXITCODE -ne 0) { throw "DiskPart failed: $output" }
 }
 finally { Remove-Item -LiteralPath $diskpartFile -Force -ErrorAction SilentlyContinue }
-Update-HostStorageCache
+if (__REFRESH_STORAGE__) { Update-HostStorageCache }
 if ($null -ne (Get-Partition -DiskNumber $diskNumber -PartitionNumber $recoveryPartitionNumber -ErrorAction SilentlyContinue)) { throw 'Recovery partition still exists after DiskPart completed.' }
 [pscustomobject]@{ RecoveryDeleted = $true } | ConvertTo-Json -Compress
 '@
@@ -814,6 +697,7 @@ try {
                 throw "Expected one exact VM match but found $($vmMatches.Count)."
             }
             $vm = $vmMatches[0]
+            Show-ToolkitDiskHistory -VM $vm -Server $server -Path $LogPath
             if ([string]$vm.PowerState -ne 'PoweredOn') { throw "VM is $($vm.PowerState); it must be powered on." }
             if ([string]$vm.ExtensionData.Guest.ToolsRunningStatus -ne 'guestToolsRunning') { throw 'VMware Tools is not running.' }
             $guestFamily = [string]$vm.ExtensionData.Guest.GuestFamily
@@ -835,6 +719,11 @@ try {
                 throw 'The VM has one or more snapshots; VMDK expansion was not attempted.'
             }
 
+            if ($needsVmdkExpansion) {
+                $backingDatastore = Get-Datastore -Id ("Datastore-" + $hardDisk.ExtensionData.Backing.Datastore.Value) -Server $server -ErrorAction Stop
+                Show-ToolkitDatastoreCapacity -Datastore $backingDatastore -AdditionalGB ($item.TargetCapacityGB - $hardDisk.CapacityGB) -StorageFormat $hardDisk.StorageFormat -MinimumFreePercent $MinimumDatastoreFreePercent -MinimumFreeGB $MinimumDatastoreFreeGB -MaximumProvisionedPercent $MaximumDatastoreProvisionedPercent
+            }
+
             $plans += [pscustomobject]@{
                 Item               = $item
                 VM                 = $vm
@@ -844,6 +733,7 @@ try {
                 NeedsVmdkExpansion = $needsVmdkExpansion
             }
         }
+        catch [System.OperationCanceledException] { throw }
         catch {
             $results += New-Result -Item $item -Outcome 'PreflightFailed' -Message $_.Exception.Message
         }
@@ -880,8 +770,15 @@ try {
 
         Write-Host "`n[$($item.VMName)] Processing drive $($item.DriveLetter):..." -ForegroundColor Cyan
         try {
+            if (-not $PSCmdlet.ShouldProcess("$($vm.Name) / $($hardDisk.Name) / $($item.DriveLetter):", "Set VMDK target $($item.TargetCapacityGB) GB and extend partition; Recovery deletion authorized: $AllowRecoveryPartitionDeletion")) {
+                $results += New-Result -Item $item -HardDisk $hardDisk.Name -VmdkBeforeGB $vmdkBefore -Outcome 'PreviewOrDeclined' -Message 'No virtual disk or guest changes performed.'
+                continue
+            }
+            $freshDisk = @(Get-HardDisk -VM $vm -Server $server -ErrorAction Stop | Where-Object Id -eq $hardDisk.Id)
+            if ($freshDisk.Count -ne 1 -or [decimal]$freshDisk[0].CapacityGB -ne $vmdkBefore -or
+                $freshDisk[0].Filename -ine $hardDisk.Filename) { throw 'Disk state changed since preflight; rerun to review current state.' }
             if ($plan.NeedsVmdkExpansion) {
-                Set-HardDisk -HardDisk $hardDisk -CapacityGB $item.TargetCapacityGB -Confirm:$false -ErrorAction Stop | Out-Null
+                $verifiedDisk = Expand-ToolkitDisk -VM $vm -Server $server -Disk $hardDisk -TargetGB $item.TargetCapacityGB -LogPath $LogPath -ScriptName 'Expand-MultipleVSphereVmDisks-v1.ps1'
                 $vmdkChanged = $true
                 $verifiedDisk = Get-HardDisk -VM $vm -Server $server -ErrorAction Stop | Where-Object { $_.Filename -ieq $hardDisk.Filename } | Select-Object -First 1
                 if ($null -eq $verifiedDisk) { throw 'The resized VMDK could not be re-resolved for verification.' }
@@ -932,6 +829,7 @@ try {
                 $results += New-Result -Item $item -HardDisk $hardDisk.Name -VmdkBeforeGB $vmdkBefore -VmdkAfterGB $vmdkAfter -PartitionBeforeGB $partitionBefore -PartitionAfterGB $partitionAfter -RecoveryDeleted $recoveryDeleted -Outcome $outcome -Message $message
             }
         }
+        catch [System.OperationCanceledException] { throw }
         catch {
             $outcome = if ($vmdkChanged -or $recoveryDeleted) { 'Partial-Failed' } else { 'Failed' }
             $results += New-Result -Item $item -HardDisk $hardDisk.Name -VmdkBeforeGB $vmdkBefore -VmdkAfterGB $vmdkAfter -PartitionBeforeGB $partitionBefore -PartitionAfterGB $partitionAfter -RecoveryDeleted $recoveryDeleted -Outcome $outcome -Message $_.Exception.Message
@@ -953,6 +851,9 @@ try {
         $results | Export-Csv -LiteralPath $resolvedPath -NoTypeInformation -Encoding UTF8
         Write-Host "Results exported to '$resolvedPath'." -ForegroundColor Green
     }
+}
+catch [System.OperationCanceledException] {
+    Write-Warning 'Cancelled. Any changes already completed remain in place.'
 }
 catch {
     Write-Error $_.Exception.Message
