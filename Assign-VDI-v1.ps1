@@ -3,13 +3,6 @@
 Assigns an available developer desktop virtual machine to a user.
 
 .DESCRIPTION
-Identity tracking:
-Stores the assigned AD account and SID as vSphere custom attributes after
-verification. Additional users are tracked separately. Duplicate checks prefer
-SIDs; VMs without identity metadata retain the assigned-name fallback.
-Requires custom-attribute permissions. Metadata failures are reported as partial
-completion and do not silently undo verified guest access.
-
 Assigns powered-on VDIs in the Developer Desktops cluster. Retrieves the user's
 full name and consultant status from Active Directory.
 
@@ -151,10 +144,6 @@ param(
     [string]$InputCsvPath
 )
 
-Import-Module (Join-Path $PSScriptRoot 'Modules\PowerCLI.Toolkit.psm1') -Force -ErrorAction Stop
-Write-Host ("[i] PowerCLI Toolkit {0}" -f (Get-ToolkitVersion)) -ForegroundColor Gray
-
-
 $ErrorActionPreference = 'Stop'
 $script:ExitRequested = $false
 $script:CompletedAssignments = 0
@@ -172,8 +161,35 @@ function Write-Banner {
 }
 
 function Write-AlignedDetails {
-    param([System.Collections.IDictionary]$Details, [int]$Indent = 2, [hashtable]$Colors = @{})
-    Write-ToolkitDetails -Details $Details -Indent $Indent -Colors $Colors
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2,
+
+        [Parameter()]
+        [hashtable]$Colors
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        $line = '{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject]
+        if ($null -ne $Colors -and $Colors.ContainsKey($label)) {
+            Write-Host $line -ForegroundColor $Colors[$label]
+        }
+        else {
+            Write-Host $line
+        }
+    }
 }
 
 function Write-VCenterConnectionDetails {
@@ -269,7 +285,58 @@ function Read-YesNo {
 }
 
 function Get-VCenterConnection {
-    return Connect-ToolkitVCenter -Name $VIServer -Credential $Credential
+    $connections = @()
+    foreach ($connection in (@($global:DefaultVIServer) + @($global:DefaultVIServers))) {
+        if ($null -eq $connection) {
+            continue
+        }
+        if ($connection.PSObject.Properties.Name -contains 'IsConnected' -and -not $connection.IsConnected) {
+            continue
+        }
+        if (@($connections | Where-Object { $_.Name -ieq $connection.Name }).Count -eq 0) {
+            $connections += $connection
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($VIServer) -and $connections.Count -eq 1) {
+        return $connections[0]
+    }
+
+    $serverName = $VIServer
+    while ([string]::IsNullOrWhiteSpace($serverName)) {
+        if ($connections.Count -gt 1) {
+            Write-Host 'More than one active vCenter Server connection is available:' -ForegroundColor Yellow
+            $connections | ForEach-Object { Write-Host "  $($_.Name)" }
+            Write-Host ''
+        }
+
+        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
+        Stop-IfExitRequested
+        if ([string]::IsNullOrWhiteSpace($serverName)) {
+            Write-Warning 'A vCenter Server host name or IP address is required.'
+            Write-Host ''
+        }
+    }
+
+    $matchingConnection = @($connections | Where-Object { $_.Name -ieq $serverName })
+    if ($matchingConnection.Count -gt 0) {
+        return $matchingConnection[0]
+    }
+
+    $connectionCredential = $Credential
+    if ($null -eq $connectionCredential) {
+        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
+        if ($null -eq $connectionCredential) {
+            throw 'The vCenter Server credential prompt was cancelled.'
+        }
+    }
+
+    try {
+        return Connect-VIServer -Server $serverName -Credential $connectionCredential -ErrorAction Stop
+    }
+    catch {
+        throw "Could not connect to vCenter Server '$serverName'. $($_.Exception.Message)"
+    }
 }
 
 function Get-ExactCluster {
@@ -809,12 +876,12 @@ function Confirm-DuplicateUserAssignment {
         [object[]]$VirtualMachines,
 
         [Parameter(Mandatory)]
-        [string]$FullName,
-        [string]$SID,
-        [object]$Server
+        [string]$FullName
     )
 
-    $matches = @(Get-ToolkitDuplicateAssignments -VMs $VirtualMachines -Server $Server -SID $SID -FullName $FullName)
+    $escapedPersonName = [regex]::Escape($FullName)
+    $pattern = "^.+\s+-\s+(?:Consultant\s+)?$escapedPersonName$"
+    $matches = @($VirtualMachines | Where-Object { $_.Name -match $pattern })
     if ($matches.Count -eq 0) {
         return [pscustomobject]@{
             Confirmed       = $true
@@ -1266,11 +1333,126 @@ function ConvertTo-GuestBase64 {
     return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
 }
 
+function Invoke-GuestScriptWithCredentialRetry {
+    param(
+        [Parameter(Mandatory)] [object]$VM,
+        [Parameter(Mandatory)] [System.Management.Automation.PSCredential]$Credential,
+        [Parameter(Mandatory)] [string]$ScriptText
+    )
 
+    if ($null -eq (Get-Variable -Name RejectedGuestCredentials -Scope Script -ErrorAction SilentlyContinue)) {
+        $script:RejectedGuestCredentials = [System.Collections.ArrayList]::new()
+    }
+    # Reuse a replacement for credentials already rejected during this session.
+    if ($null -ne $script:RejectedGuestCredentials -and
+        $script:RejectedGuestCredentials.Contains($Credential)) {
+        $Credential = $script:ResolvedGuestCredential
+    }
+
+    while ($true) {
+        $retryMessage = $null
+        if ($Credential.Password.Length -eq 0) {
+            $retryMessage = 'The Windows guest password cannot be empty. Enter the username and password again.'
+        }
+        else {
+            try {
+                return Invoke-VMScript -VM $VM -GuestCredential $Credential -ScriptType Powershell -ScriptText $ScriptText -ErrorAction Stop
+            }
+            catch {
+                if ($_.Exception.Message -notmatch '(?i)vix error codes\s*=\s*\(\s*3033\s*,\s*0\s*\)') {
+                    throw
+                }
+                $retryMessage = 'VMware Tools rejected the Windows guest credentials (VIX 3033). Enter the username and a non-empty password again.'
+            }
+        }
+
+        Write-Warning $retryMessage
+        if ($null -eq $script:RejectedGuestCredentials) {
+            $script:RejectedGuestCredentials = [System.Collections.ArrayList]::new()
+        }
+        [void]$script:RejectedGuestCredentials.Add($Credential)
+        $replacement = Get-Credential -UserName $Credential.UserName -Message 'Enter Windows guest administrator credentials. Select Cancel to cancel this guest operation.'
+        if ($null -eq $replacement) {
+            throw 'Windows guest credential entry was cancelled. The guest operation was not retried.'
+        }
+        $Credential = $replacement
+        $script:ResolvedGuestCredential = $replacement
+    }
+}
 
 function Invoke-WindowsGuestPowerShell {
-    param([object]$VM, [pscredential]$Credential, [string]$ScriptText)
-    return Invoke-ToolkitGuestPowerShell -VM $VM -Credential $Credential -ScriptText $ScriptText -Server $server -Preview:$WhatIfPreference
+    param(
+        [Parameter(Mandatory)]
+        [object]$VM,
+
+        [Parameter(Mandatory)]
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory)]
+        [string]$ScriptText
+    )
+
+    $wrappedScript = @'
+try {
+    $guestResults = @(& {
+__GUEST_SCRIPT_BODY__
+    })
+    if ($guestResults.Count -eq 0) {
+        throw 'Guest operation returned no result payload.'
+    }
+    Write-Output '__VMWARE_GUEST_PAYLOAD_BEGIN__'
+    Write-Output ([string]$guestResults[-1]).Trim()
+    Write-Output '__VMWARE_GUEST_PAYLOAD_END__'
+}
+catch {
+    Write-Output ("Guest exception: " + $_.Exception.Message + [Environment]::NewLine + $_.InvocationInfo.PositionMessage)
+    exit 1
+}
+'@
+    $wrappedScript = $wrappedScript.Replace('__GUEST_SCRIPT_BODY__', $ScriptText)
+    try {
+        $result = Invoke-GuestScriptWithCredentialRetry -VM $VM -Credential $Credential -ScriptText $wrappedScript
+    }
+    catch {
+        if ($_.Exception.Message -match '(?i)vix error codes\s*=\s*\(\s*1\s*,\s*0\s*\)') {
+            $message = "VMware Tools could not complete the guest operation on VM '$($VM.Name)'." +
+                [Environment]::NewLine + [Environment]::NewLine +
+                'Restart the VMware Tools service inside the VM and try again.' +
+                [Environment]::NewLine +
+                'If the issue persists, reboot the VM and retry the assignment.' +
+                [Environment]::NewLine + [Environment]::NewLine +
+                "Error details: $($_.Exception.Message)"
+            throw [System.InvalidOperationException]::new($message, $_.Exception)
+        }
+        throw
+    }
+    if ($result.ExitCode -ne 0) {
+        $details = [string]$result.ScriptOutput
+        if ([string]::IsNullOrWhiteSpace($details)) {
+            $details = 'VMware Tools returned no guest error details.'
+        }
+        throw "The Windows guest script failed with exit code $($result.ExitCode): $($details.Trim())"
+    }
+
+    $output = [string]$result.ScriptOutput
+    $beginMarker = '__VMWARE_GUEST_PAYLOAD_BEGIN__'
+    $endMarker = '__VMWARE_GUEST_PAYLOAD_END__'
+    $beginIndex = $output.LastIndexOf($beginMarker, [System.StringComparison]::Ordinal)
+    if ($beginIndex -lt 0) {
+        $displayOutput = $output.Trim()
+        if ($displayOutput.Length -gt 2000) {
+            $displayOutput = $displayOutput.Substring(0, 2000) + '...'
+        }
+        throw "The Windows guest returned an unframed result. Guest output: $displayOutput"
+    }
+
+    $payloadStart = $beginIndex + $beginMarker.Length
+    $endIndex = $output.IndexOf($endMarker, $payloadStart, [System.StringComparison]::Ordinal)
+    if ($endIndex -lt 0) {
+        throw 'The Windows guest result was incomplete: the payload end marker was missing.'
+    }
+
+    return $output.Substring($payloadStart, $endIndex - $payloadStart).Trim()
 }
 
 function Add-GuestRemoteDesktopUser {
@@ -1482,7 +1664,7 @@ try {
             $personName = [string]$workItem.FullName
             $assignmentLabel = if ([bool]$workItem.Consultant) { "Consultant $personName" } else { $personName }
             $allVirtualMachines = @(Get-VM -Location $cluster -Server $server -ErrorAction Stop)
-            $duplicateDecision = Confirm-DuplicateUserAssignment -VirtualMachines $allVirtualMachines -FullName $workItem.FullName -SID $workItem.ADUserSID -Server $server
+            $duplicateDecision = Confirm-DuplicateUserAssignment -VirtualMachines $allVirtualMachines -FullName $workItem.FullName
             if (-not $duplicateDecision.Confirmed) {
                 $message = "Duplicate VDI assignment was not authorized. Existing assignment(s): $($duplicateDecision.ExistingVMNames -join ', ')"
                 Write-Host "$message No changes were made for '$personName'." -ForegroundColor Yellow
@@ -1599,15 +1781,6 @@ try {
                 Write-Host ''
             }
 
-            try {
-                Set-ToolkitAssignmentIdentity -VM $selectedVM -Server $server -Account $guestResult.Account -SID $workItem.ADUserSID -Additional:($workItem.NamingConvention -eq 'EXISTING')
-            }
-            catch {
-                $message = "RDP access and any requested rename were verified, but AD identity tracking was not completed: $($_.Exception.Message). Do not repeat the assignment to fix metadata."
-                Write-Warning $message
-                $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Partial-MetadataFailed' -Message $message -VMName $targetVMName -ResolvedADAccount $guestResult.Account
-                continue
-            }
             $script:CompletedAssignments++
             if ($workItem.NamingConvention -eq 'REASSIGN') {
                 Write-Host "VDI reassignment completed successfully for '$personName' on '$targetVMName'." -ForegroundColor Green
@@ -1624,7 +1797,6 @@ try {
             }
             $results += New-AssignmentResult -WorkItem $workItem -Outcome 'Completed' -Message $completionMessage -VMName $targetVMName -ResolvedADAccount $guestResult.Account
             }
-            catch [System.OperationCanceledException] { throw }
             catch {
                 $message = $_.Exception.Message
                 $failedUser = if ([string]::IsNullOrWhiteSpace([string]$workItem.FullName)) { $workItem.ADAccountName } else { $workItem.FullName }
@@ -1656,15 +1828,12 @@ try {
         Out-String
     Write-Host ($resultsTable.TrimEnd())
 
-    $failedResults = @($results | Where-Object { $_.Outcome -in @('InputFailed', 'Failed', 'Partial-MetadataFailed') })
+    $failedResults = @($results | Where-Object { $_.Outcome -in @('InputFailed', 'Failed') })
     if ($failedResults.Count -gt 0) {
         Write-Host "`nFailure details:" -ForegroundColor Yellow
         Write-Host (($failedResults | Select-Object CsvRow, NamingConvention, RequestedVMName, User, Consultant, ConsultantOU, RequestedADAccount, Outcome, Message | Format-List | Out-String).TrimEnd())
         throw "$($failedResults.Count) assignment(s) failed. Review the results above."
     }
-}
-catch [System.OperationCanceledException] {
-    Write-Warning 'Cancelled. Any changes already completed remain in place.'
 }
 catch {
     Write-Error $_.Exception.Message

@@ -77,19 +77,6 @@ username and password, including when GuestCredential was supplied initially.
 Skips all vSphere virtual-disk changes and runs only the Windows guest partition
 workflow. Use this to resume after the VMDK was already expanded.
 
-.PARAMETER LogPath
-CSV path for vSphere disk history. Defaults to C:\Temp\DiskOperations.csv.
-Use a secured shared path for history across operators.
-
-.PARAMETER MinimumDatastoreFreePercent
-Warn when datastore free space is below this percentage. Default: 10.
-
-.PARAMETER MinimumDatastoreFreeGB
-Warn when datastore free space is below this capacity in GB. Default: 50.
-
-.PARAMETER MaximumDatastoreProvisionedPercent
-Warn when estimated provisioned capacity exceeds this percentage. Default: 150.
-
 .EXAMPLE
 .\Expand-VSphereVmDisk-v3.ps1 -VIServer vcsa01.contoso.com
 
@@ -99,7 +86,7 @@ Warn when estimated provisioned capacity exceeds this percentage. Default: 150.
 .EXAMPLE
 .\Expand-VSphereVmDisk-v3.ps1 -VMName APP01 -GuestOnly
 #>
-[CmdletBinding(SupportsShouldProcess)]
+[CmdletBinding()]
 param(
     [Parameter()]
     [string]$VIServer,
@@ -136,17 +123,8 @@ param(
     [System.Management.Automation.PSCredential]$GuestCredential,
 
     [Parameter()]
-    [switch]$GuestOnly,
-    [string]$LogPath = 'C:\Temp\DiskOperations.csv',
-    [ValidateRange(0,100)][decimal]$MinimumDatastoreFreePercent = 10,
-    [ValidateRange(0,1000000000)][decimal]$MinimumDatastoreFreeGB = 50,
-    [ValidateRange(0,1000000)][decimal]$MaximumDatastoreProvisionedPercent = 150
+    [switch]$GuestOnly
 )
-
-Import-Module (Join-Path $PSScriptRoot 'Modules\PowerCLI.Toolkit.psm1') -Force -ErrorAction Stop
-Write-Host ("[i] PowerCLI Toolkit {0}" -f (Get-ToolkitVersion)) -ForegroundColor Gray
-$script:WorkflowCmdlet = $PSCmdlet
-
 
 $EnhancedUI = $true
 $ErrorActionPreference = 'Stop'
@@ -171,8 +149,35 @@ function Write-EnhancedUiBanner {
 }
 
 function Write-AlignedDetails {
-    param([System.Collections.IDictionary]$Details, [int]$Indent = 2, [hashtable]$Colors = @{})
-    Write-ToolkitDetails -Details $Details -Indent $Indent -Colors $Colors
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2,
+
+        [Parameter()]
+        [hashtable]$Colors
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        $line = '{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject]
+        if ($null -ne $Colors -and $Colors.ContainsKey($label)) {
+            Write-Host $line -ForegroundColor $Colors[$label]
+        }
+        else {
+            Write-Host $line
+        }
+    }
 }
 
 function Write-VCenterConnectionDetails {
@@ -346,7 +351,60 @@ function Stop-IfExitRequested {
 }
 
 function Get-VCenterConnection {
-    return Connect-ToolkitVCenter -Name $VIServer -Credential $Credential
+    # Do not call Get-VIServer here. In some PowerCLI versions it resolves to a
+    # legacy alias for Connect-VIServer and prompts for its mandatory Server
+    # parameter. PowerCLI stores active default connections in these variables.
+    $existingConnections = @()
+    foreach ($connection in (@($global:DefaultVIServer) + @($global:DefaultVIServers))) {
+        if ($null -eq $connection) {
+            continue
+        }
+
+        if ($connection.PSObject.Properties.Name -contains 'IsConnected' -and -not $connection.IsConnected) {
+            continue
+        }
+
+        if (@($existingConnections | Where-Object { $_.Name -ieq $connection.Name }).Count -eq 0) {
+            $existingConnections += $connection
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($VIServer)) {
+        if ($existingConnections.Count -eq 1) {
+            return $existingConnections[0]
+        }
+    }
+
+    $serverName = $VIServer
+    while ([string]::IsNullOrWhiteSpace($serverName)) {
+        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
+        Stop-IfExitRequested
+
+        if ([string]::IsNullOrWhiteSpace($serverName)) {
+            Write-Warning 'A vCenter Server host name or IP address is required.'
+            Write-Host ''
+        }
+    }
+
+    $matchingConnection = @($existingConnections | Where-Object { $_.Name -ieq $serverName })
+    if ($matchingConnection.Count -gt 0) {
+        return $matchingConnection[0]
+    }
+
+    try {
+        $connectionCredential = $Credential
+        if ($null -eq $connectionCredential) {
+            $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
+            if ($null -eq $connectionCredential) {
+                throw 'The vCenter credential prompt was cancelled.'
+            }
+        }
+
+        return Connect-VIServer -Server $serverName -Credential $connectionCredential -ErrorAction Stop
+    }
+    catch {
+        throw "Could not connect to vCenter Server '$serverName'. $($_.Exception.Message)"
+    }
 }
 
 function Select-ExactVM {
@@ -523,7 +581,7 @@ $volumes = foreach ($partition in Get-Partition) {
 } | ConvertTo-Json -Depth 4 -Compress
 '@
 
-    $json = Invoke-WindowsGuestPowerShell -VM $VM -Credential $Credential -ScriptText $scriptText -ReadOnly
+    $json = Invoke-WindowsGuestPowerShell -VM $VM -Credential $Credential -ScriptText $scriptText
     $payload = $json | ConvertFrom-Json -ErrorAction Stop
     return @($payload.Volumes)
 }
@@ -966,11 +1024,115 @@ function Get-WindowsGuestCredential {
     }
 }
 
+function Invoke-GuestScriptWithCredentialRetry {
+    param(
+        [Parameter(Mandatory)] [object]$VM,
+        [Parameter(Mandatory)] [System.Management.Automation.PSCredential]$Credential,
+        [Parameter(Mandatory)] [string]$ScriptText
+    )
 
+    if ($null -eq (Get-Variable -Name RejectedGuestCredentials -Scope Script -ErrorAction SilentlyContinue)) {
+        $script:RejectedGuestCredentials = [System.Collections.ArrayList]::new()
+    }
+    # Reuse a replacement for credentials already rejected during this session.
+    if ($null -ne $script:RejectedGuestCredentials -and
+        $script:RejectedGuestCredentials.Contains($Credential)) {
+        $Credential = $script:ResolvedGuestCredential
+    }
+
+    while ($true) {
+        $retryMessage = $null
+        if ($Credential.Password.Length -eq 0) {
+            $retryMessage = 'The Windows guest password cannot be empty. Enter the username and password again.'
+        }
+        else {
+            try {
+                return Invoke-VMScript -VM $VM -GuestCredential $Credential -ScriptType Powershell -ScriptText $ScriptText -ErrorAction Stop
+            }
+            catch {
+                if ($_.Exception.Message -notmatch '(?i)vix error codes\s*=\s*\(\s*3033\s*,\s*0\s*\)') {
+                    throw
+                }
+                $retryMessage = 'VMware Tools rejected the Windows guest credentials (VIX 3033). Enter the username and a non-empty password again.'
+            }
+        }
+
+        Write-Warning $retryMessage
+        if ($null -eq $script:RejectedGuestCredentials) {
+            $script:RejectedGuestCredentials = [System.Collections.ArrayList]::new()
+        }
+        [void]$script:RejectedGuestCredentials.Add($Credential)
+        $replacement = Get-Credential -UserName $Credential.UserName -Message 'Enter Windows guest administrator credentials. Select Cancel to cancel this guest operation.'
+        if ($null -eq $replacement) {
+            throw 'Windows guest credential entry was cancelled. The guest operation was not retried.'
+        }
+        $Credential = $replacement
+        $script:ResolvedGuestCredential = $replacement
+    }
+}
 
 function Invoke-WindowsGuestPowerShell {
-    param([object]$VM, [pscredential]$Credential, [string]$ScriptText, [switch]$ReadOnly)
-    return Invoke-ToolkitGuestPowerShell -VM $VM -Credential $Credential -ScriptText $ScriptText -Server $server -ReadOnly:$ReadOnly -Preview:$WhatIfPreference
+    param(
+        [Parameter(Mandatory)]
+        [object]$VM,
+
+        [Parameter(Mandatory)]
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory)]
+        [string]$ScriptText
+    )
+
+    # Keep this wrapper compact. Invoke-VMScript transports Windows PowerShell
+    # through VMware Tools and large encoded command lines can fail before the
+    # guest script starts, returning exit code 1 with no ScriptOutput.
+    $wrappedScript = @'
+try {
+    $guestResults = @(& {
+__GUEST_SCRIPT_BODY__
+    })
+    if ($guestResults.Count -eq 0) {
+        throw 'Guest operation returned no result payload.'
+    }
+    Write-Output '__VMWARE_GUEST_PAYLOAD_BEGIN__'
+    Write-Output ([string]$guestResults[-1]).Trim()
+    Write-Output '__VMWARE_GUEST_PAYLOAD_END__'
+}
+catch {
+    Write-Output ("Guest exception: " + $_.Exception.Message + [Environment]::NewLine + $_.InvocationInfo.PositionMessage)
+    exit 1
+}
+'@
+    $wrappedScript = $wrappedScript.Replace('__GUEST_SCRIPT_BODY__', $ScriptText)
+
+    $result = Invoke-GuestScriptWithCredentialRetry -VM $VM -Credential $Credential -ScriptText $wrappedScript
+    if ($result.ExitCode -ne 0) {
+        $errorDetails = [string]$result.ScriptOutput
+        if ([string]::IsNullOrWhiteSpace($errorDetails)) {
+            $errorDetails = 'VMware Tools returned no guest error details.'
+        }
+        throw "The Windows guest script failed with exit code $($result.ExitCode): $($errorDetails.Trim())"
+    }
+
+    $rawOutput = [string]$result.ScriptOutput
+    $beginMarker = '__VMWARE_GUEST_PAYLOAD_BEGIN__'
+    $endMarker = '__VMWARE_GUEST_PAYLOAD_END__'
+    $beginIndex = $rawOutput.LastIndexOf($beginMarker, [System.StringComparison]::Ordinal)
+    if ($beginIndex -lt 0) {
+        $displayOutput = $rawOutput.Trim()
+        if ($displayOutput.Length -gt 2000) {
+            $displayOutput = $displayOutput.Substring(0, 2000) + '...'
+        }
+        throw "The Windows guest returned an unframed result. Guest output: $displayOutput"
+    }
+
+    $payloadStart = $beginIndex + $beginMarker.Length
+    $endIndex = $rawOutput.IndexOf($endMarker, $payloadStart, [System.StringComparison]::Ordinal)
+    if ($endIndex -lt 0) {
+        throw 'The Windows guest result was incomplete: the payload end marker was missing.'
+    }
+
+    return $rawOutput.Substring($payloadStart, $endIndex - $payloadStart).Trim()
 }
 
 function Get-WindowsGuestPartitions {
@@ -1486,12 +1648,6 @@ function Invoke-WindowsGuestPartitionExtension {
         [switch]$WindowsWorkstationWorkflow
     )
 
-    if ($WhatIfPreference) {
-        Write-Host "What if: Inspect and optionally extend a Windows partition on '$($VM.Name)'. No guest changes or partition deletion will run."
-        return
-    }
-    if (-not $script:WorkflowCmdlet.ShouldProcess($VM.Name, 'Inspect and optionally extend a Windows partition')) { return }
-
     if ($VM.PowerState -ne 'PoweredOn') {
         Write-Warning "VM '$($VM.Name)' is not powered on. No guest partition was changed."
         return
@@ -1597,7 +1753,6 @@ try {
     }
     $vmSelection = Select-VMWithGuestWorkflow @selectionArguments
     $vm = $vmSelection.VM
-    Show-ToolkitDiskHistory -VM $vm -Server $server -Path $LogPath
     $guestOSName = $vmSelection.GuestOSName
     $workflow = $vmSelection.Workflow
 
@@ -1663,13 +1818,6 @@ try {
         })
     Write-Host ''
 
-    $backingDatastore = Get-Datastore -Id ("Datastore-" + $disk.ExtensionData.Backing.Datastore.Value) -Server $server -ErrorAction Stop
-    Show-ToolkitDatastoreCapacity -Datastore $backingDatastore -AdditionalGB $additionalGB -StorageFormat $disk.StorageFormat -MinimumFreePercent $MinimumDatastoreFreePercent -MinimumFreeGB $MinimumDatastoreFreeGB -MaximumProvisionedPercent $MaximumDatastoreProvisionedPercent
-    if (-not $PSCmdlet.ShouldProcess("$($vm.Name) / $($disk.Name)", "Expand VMDK to $newCapacityGB GB; optionally extend a Windows partition")) {
-        Write-Host '[i] Preview only: guest partition changes and deletion are not performed.'
-        return
-    }
-
     if (-not (Read-YesNo -Prompt "Expand '$($disk.Name)' on '$($vm.Name)' to $newCapacityGB GB?")) {
         Write-Host ''
         Write-Host 'Disk expansion was cancelled. No changes were made.' -ForegroundColor Yellow
@@ -1682,7 +1830,7 @@ try {
 
     Write-Host ''
     Write-EnhancedUiStatus -Type Action -Message "Expanding $($disk.Name) to $newCapacityGB GB in vSphere..."
-    $disk = Expand-ToolkitDisk -VM $vm -Server $server -Disk $disk -TargetGB $newCapacityGB -LogPath $LogPath -ScriptName 'Expand-VSphereVmDisk-v3.ps1'
+    Set-HardDisk -HardDisk $disk -CapacityGB $newCapacityGB -Confirm:$false -ErrorAction Stop | Out-Null
     $script:VmdkExpanded = $true
 
     Write-Host "`nSuccessfully expanded '$($disk.Name)' on '$($vm.Name)' by $additionalGB GB." -ForegroundColor Green
@@ -1698,9 +1846,6 @@ try {
     }
 
     Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '4/4' -SelectedDisk $disk.Name -OldCapacityGB $currentCapacityGB -NewCapacityGB $newCapacityGB
-}
-catch [System.OperationCanceledException] {
-    Write-Warning 'Cancelled. Any changes already completed remain in place.'
 }
 catch {
     Write-Error $_.Exception.Message

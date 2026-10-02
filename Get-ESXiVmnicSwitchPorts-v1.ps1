@@ -92,10 +92,6 @@ param(
     [string]$CsvPath
 )
 
-Import-Module (Join-Path $PSScriptRoot 'Modules\PowerCLI.Toolkit.psm1') -Force -ErrorAction Stop
-Write-Host ("[i] PowerCLI Toolkit {0}" -f (Get-ToolkitVersion)) -ForegroundColor Gray
-
-
 $ErrorActionPreference = 'Stop'
 $script:ExitRequested = $false
 
@@ -132,8 +128,26 @@ function Stop-IfExitRequested {
 }
 
 function Write-AlignedDetails {
-    param([System.Collections.IDictionary]$Details, [int]$Indent = 2, [hashtable]$Colors = @{})
-    Write-ToolkitDetails -Details $Details -Indent $Indent -Colors $Colors
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        Write-Host ('{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject])
+    }
 }
 
 function Write-VCenterConnectionDetails {
@@ -175,7 +189,51 @@ function Write-VCenterConnectionDetails {
 }
 
 function Get-VCenterConnection {
-    return Connect-ToolkitVCenter -Name $VIServer -Credential $Credential
+    $existingConnections = @()
+    foreach ($connection in (@($global:DefaultVIServer) + @($global:DefaultVIServers))) {
+        if ($null -eq $connection) {
+            continue
+        }
+        if ($connection.PSObject.Properties.Name -contains 'IsConnected' -and -not $connection.IsConnected) {
+            continue
+        }
+        if (@($existingConnections | Where-Object { $_.Name -ieq $connection.Name }).Count -eq 0) {
+            $existingConnections += $connection
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($VIServer) -and $existingConnections.Count -eq 1) {
+        return $existingConnections[0]
+    }
+
+    $serverName = $VIServer
+    while ([string]::IsNullOrWhiteSpace($serverName)) {
+        if ($existingConnections.Count -gt 1) {
+            Write-Host 'More than one active vCenter connection was found:' -ForegroundColor Yellow
+            $existingConnections | ForEach-Object { Write-Host "  $($_.Name)" }
+        }
+        Write-Host ''
+        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
+        Stop-IfExitRequested
+        if ([string]::IsNullOrWhiteSpace($serverName)) {
+            Write-Warning 'A vCenter Server host name or IP address is required.'
+        }
+    }
+
+    $matchingConnection = @($existingConnections | Where-Object { $_.Name -ieq $serverName })
+    if ($matchingConnection.Count -gt 0) {
+        return $matchingConnection[0]
+    }
+
+    $connectionCredential = $Credential
+    if ($null -eq $connectionCredential) {
+        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
+        if ($null -eq $connectionCredential) {
+            throw 'The vCenter credential prompt was cancelled.'
+        }
+    }
+
+    return Connect-VIServer -Server $serverName -Credential $connectionCredential -ErrorAction Stop
 }
 
 function Get-SelectedVMHosts {
@@ -462,9 +520,6 @@ try {
     if ($missingNeighborCount -gt 0) {
         Write-Warning "$missingNeighborCount vmnic(s) had no CDP or LLDP neighbor data. Confirm that discovery advertisements are enabled on the physical switch ports."
     }
-}
-catch [System.OperationCanceledException] {
-    Write-Warning 'Cancelled. Any changes already completed remain in place.'
 }
 catch {
     Write-Error $_.Exception.Message

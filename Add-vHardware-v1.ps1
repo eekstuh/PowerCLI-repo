@@ -59,19 +59,6 @@ lists the VM host's accessible datastores and prompts for a selection.
 .PARAMETER StorageFormat
 Storage format for a new disk: Thin, Thick, or EagerZeroedThick. Default: Thin.
 
-.PARAMETER LogPath
-CSV path for vSphere disk history. Defaults to C:\Temp\DiskOperations.csv.
-Use a secured shared path for history across operators.
-
-.PARAMETER MinimumDatastoreFreePercent
-Warn when datastore free space is below this percentage. Default: 10.
-
-.PARAMETER MinimumDatastoreFreeGB
-Warn when datastore free space is below this capacity in GB. Default: 50.
-
-.PARAMETER MaximumDatastoreProvisionedPercent
-Warn when estimated provisioned capacity exceeds this percentage. Default: 150.
-
 .EXAMPLE
 .\Add-vHardware-v1.ps1
 
@@ -87,7 +74,7 @@ Warn when estimated provisioned capacity exceeds this percentage. Default: 150.
 .EXAMPLE
 .\Add-vHardware-v1.ps1 -VMName SQL01 -Action Disk -DiskSizeGB 250 -DatastoreName SQL-DATA-02 -StorageFormat Thin
 #>
-[CmdletBinding(SupportsShouldProcess)]
+[CmdletBinding()]
 param(
     [Parameter()]
     [string]$VIServer,
@@ -164,16 +151,8 @@ param(
 
     [Parameter()]
     [ValidateSet('Thin', 'Thick', 'EagerZeroedThick')]
-    [string]$StorageFormat = 'Thin',
-    [string]$LogPath = 'C:\Temp\DiskOperations.csv',
-    [ValidateRange(0,100)][decimal]$MinimumDatastoreFreePercent = 10,
-    [ValidateRange(0,1000000000)][decimal]$MinimumDatastoreFreeGB = 50,
-    [ValidateRange(0,1000000)][decimal]$MaximumDatastoreProvisionedPercent = 150
+    [string]$StorageFormat = 'Thin'
 )
-
-Import-Module (Join-Path $PSScriptRoot 'Modules\PowerCLI.Toolkit.psm1') -Force -ErrorAction Stop
-Write-Host ("[i] PowerCLI Toolkit {0}" -f (Get-ToolkitVersion)) -ForegroundColor Gray
-
 
 $ErrorActionPreference = 'Stop'
 $script:ExitRequested = $false
@@ -209,8 +188,35 @@ function Write-Banner {
 }
 
 function Write-AlignedDetails {
-    param([System.Collections.IDictionary]$Details, [int]$Indent = 2, [hashtable]$Colors = @{})
-    Write-ToolkitDetails -Details $Details -Indent $Indent -Colors $Colors
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2,
+
+        [Parameter()]
+        [hashtable]$Colors
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        $line = '{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject]
+        if ($null -ne $Colors -and $Colors.ContainsKey($label)) {
+            Write-Host $line -ForegroundColor $Colors[$label]
+        }
+        else {
+            Write-Host $line
+        }
+    }
 }
 
 function Write-VCenterConnectionDetails {
@@ -301,7 +307,47 @@ function Read-YesNo {
 }
 
 function Get-VCenterConnection {
-    return Connect-ToolkitVCenter -Name $VIServer -Credential $Credential
+    $existingConnections = @()
+    foreach ($connection in (@($global:DefaultVIServer) + @($global:DefaultVIServers))) {
+        if ($null -eq $connection) {
+            continue
+        }
+        if ($connection.PSObject.Properties.Name -contains 'IsConnected' -and -not $connection.IsConnected) {
+            continue
+        }
+        if (@($existingConnections | Where-Object { $_.Name -ieq $connection.Name }).Count -eq 0) {
+            $existingConnections += $connection
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($VIServer) -and $existingConnections.Count -eq 1) {
+        return $existingConnections[0]
+    }
+
+    $serverName = $VIServer
+    while ([string]::IsNullOrWhiteSpace($serverName)) {
+        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
+        Stop-IfExitRequested
+        if ([string]::IsNullOrWhiteSpace($serverName)) {
+            Write-Warning 'A vCenter Server host name or IP address is required.'
+            Write-Host ''
+        }
+    }
+
+    $matchingConnection = @($existingConnections | Where-Object { $_.Name -ieq $serverName })
+    if ($matchingConnection.Count -gt 0) {
+        return $matchingConnection[0]
+    }
+
+    $connectionCredential = $Credential
+    if ($null -eq $connectionCredential) {
+        $connectionCredential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
+        if ($null -eq $connectionCredential) {
+            throw 'The vCenter credential prompt was cancelled.'
+        }
+    }
+
+    return Connect-VIServer -Server $serverName -Credential $connectionCredential -ErrorAction Stop
 }
 
 function Select-ExactVM {
@@ -1054,9 +1100,6 @@ function Add-UniqueVirtualDisk {
     if ($null -eq $createdDisk) {
         throw "vSphere reported success, but the new disk '$targetPath' could not be verified."
     }
-    if ($createdDisk.ExtensionData.UnitNumber -ne $scsiLocation.UnitNumber) {
-        throw 'The new disk SCSI unit number does not match the requested location.'
-    }
 
     return [pscustomobject]@{
         HardDisk       = $createdDisk
@@ -1104,7 +1147,6 @@ try {
         $vmArguments.InitialVMName = $VMName
     }
     $vm = Select-ExactVM @vmArguments
-    Show-ToolkitDiskHistory -VM $vm -Server $server -Path $LogPath
     if (-not $vmNameWasSupplied) {
         Write-Host ''
     }
@@ -1166,7 +1208,6 @@ try {
                     'Cores per socket' = "$currentCoresPerSocket -> $newCoresPerSocket"
                 })
             Write-Host ''
-            if (-not $PSCmdlet.ShouldProcess($vm.Name, "Set vCPU count to $newCpuCount")) { return }
             if (-not (Read-YesNo -Prompt 'Apply the proposed vCPU configuration?')) {
                 Write-Host ''
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
@@ -1185,10 +1226,6 @@ try {
                 $cpuChangeParameters.CoresPerSocket = $newCoresPerSocket
             }
 
-            $freshVM = Get-VM -Id $vm.Id -Server $server -ErrorAction Stop
-            if ($freshVM.NumCpu -ne $vm.NumCpu -or $freshVM.PowerState -ne $vm.PowerState -or
-                (Get-VmCoresPerSocket -VM $freshVM) -ne $currentCoresPerSocket) { throw 'VM CPU or power state changed after planning. Review it again.' }
-            Assert-HotAddAvailability -VM $freshVM -Resource CPU
             Set-VM @cpuChangeParameters | Out-Null
             $verifiedVm = Get-VM -Id $vm.Id -Server $server -ErrorAction Stop
             if ([int]$verifiedVm.NumCpu -ne $newCpuCount) {
@@ -1251,7 +1288,6 @@ try {
                     'Memory'    = "$($vm.MemoryGB) GB -> $newMemoryGB GB"
                 })
             Write-Host ''
-            if (-not $PSCmdlet.ShouldProcess($vm.Name, "Set memory to $newMemoryGB GB")) { return }
             if (-not (Read-YesNo -Prompt 'Apply the proposed memory configuration?')) {
                 Write-Host ''
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
@@ -1259,9 +1295,6 @@ try {
             }
             Write-Host ''
 
-            $freshVM = Get-VM -Id $vm.Id -Server $server -ErrorAction Stop
-            if ($freshVM.MemoryGB -ne $vm.MemoryGB -or $freshVM.PowerState -ne $vm.PowerState) { throw 'VM memory or power state changed after planning. Review it again.' }
-            if ($selectedMemoryOperation -eq 'Add') { Assert-HotAddAvailability -VM $freshVM -Resource Memory }
             Set-VM -VM $vm -MemoryGB $newMemoryGB -Confirm:$false -Server $server -ErrorAction Stop | Out-Null
             $verifiedVm = Get-VM -Id $vm.Id -Server $server -ErrorAction Stop
             if ([decimal]$verifiedVm.MemoryGB -ne $newMemoryGB) {
@@ -1292,12 +1325,10 @@ try {
                     'Backing file'   = $plannedPath
                     'Controller'     = "$($selectedController.Controller) (next available address: $($selectedController.BusNumber):$($selectedController.FreeUnitNumbers[0]))"
                 }) -Colors @{ 'Backing file' = 'Green' }
-            Show-ToolkitDatastoreCapacity -Datastore $targetDatastore -AdditionalGB $capacity -StorageFormat $StorageFormat -MinimumFreePercent $MinimumDatastoreFreePercent -MinimumFreeGB $MinimumDatastoreFreeGB -MaximumProvisionedPercent $MaximumDatastoreProvisionedPercent
             if ([decimal]$targetDatastore.FreeSpaceGB -lt $capacity) {
                 Write-Warning "The datastore reports only $([math]::Round([decimal]$targetDatastore.FreeSpaceGB, 2)) GB free. Thin provisioning may overcommit storage; Thick formats may fail."
             }
             Write-Host ''
-            if (-not $PSCmdlet.ShouldProcess($vm.Name, "Create $capacity GB virtual disk at $plannedPath")) { return }
             if (-not (Read-YesNo -Prompt 'Create and attach the proposed virtual disk?')) {
                 Write-Host ''
                 Write-Host 'Cancelled. No changes were made.' -ForegroundColor Yellow
@@ -1305,21 +1336,7 @@ try {
             }
             Write-Host ''
 
-            $record = New-ToolkitDiskRecord -VM $vm -Server $server -Operation 'AddVirtualDisk' -OldCapacityGB 0 -RequestedCapacityGB $capacity -VMDKPath $plannedPath -ScriptName 'Add-vHardware-v1.ps1'
-            Write-ToolkitCsvRecord -Path $LogPath -Record $record
-            try {
             $result = Add-UniqueVirtualDisk -VM $vm -Server $server -Datastore $targetDatastore -CapacityGB $capacity -Format $StorageFormat -ExpectedDatastorePath $plannedPath -ControllerKey $selectedController.ControllerKey
-                if ([math]::Abs([decimal]$result.HardDisk.CapacityGB - $capacity) -gt (1 / 1MB) -or
-                    $result.HardDisk.ExtensionData.ControllerKey -ne $selectedController.ControllerKey) {
-                    throw 'The attached disk capacity or controller did not match the plan. Verify the VM before retrying.'
-                }
-            }
-            catch {
-                Complete-ToolkitDiskRecord -Path $LogPath -Record $record -Result 'Unverified' -ErrorMessage $_.Exception.Message
-                throw
-            }
-            $record.HardDisk = $result.HardDisk.Name
-            Complete-ToolkitDiskRecord -Path $LogPath -Record $record -Result 'Success' -VerifiedCapacityGB $result.HardDisk.CapacityGB
             Write-Host "Successfully added '$($result.HardDisk.Name)' to '$($vm.Name)'." -ForegroundColor Green
             Write-AlignedDetails -Details ([ordered]@{
                     'Backing file' = $result.DatastorePath
@@ -1328,9 +1345,6 @@ try {
             Write-Host 'The disk is not initialized or formatted inside the guest OS.' -ForegroundColor Yellow
         }
     }
-}
-catch [System.OperationCanceledException] {
-    Write-Warning 'Cancelled. Any changes already completed remain in place.'
 }
 catch {
     Write-Error $_.Exception.Message

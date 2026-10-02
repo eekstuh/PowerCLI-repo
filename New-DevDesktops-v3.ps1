@@ -1,5 +1,3 @@
-#requires -Version 5.1
-#requires -Modules VMware.VimAutomation.Core
 <#
 .SYNOPSIS
   Interactively create a numbered batch of developer desktop VMs.
@@ -21,28 +19,6 @@ Connection:
 Reuses an active vCenter connection or prompts to establish one.
 Enter 'exit' at any text prompt to cancel before VM creation. Select Cancel
 at the credential prompt to cancel as well.
-.PARAMETER LogPath
-CSV path for vSphere disk history. Defaults to C:\Temp\DiskOperations.csv.
-Use a secured shared path for history across operators.
-
-.PARAMETER MinimumDatastoreFreePercent
-Warn when datastore free space is below this percentage. Default: 10.
-
-.PARAMETER MinimumDatastoreFreeGB
-Warn when datastore free space is below this capacity in GB. Default: 50.
-
-.PARAMETER MaximumDatastoreProvisionedPercent
-Warn when estimated provisioned capacity exceeds this percentage. Default: 150.
-
-.PARAMETER VIServer
-Optional vCenter name. Reuses a matching connection or establishes a new one.
-
-.PARAMETER Credential
-Optional vCenter credential used only when a new connection is required.
-
-.EXAMPLE
-.\New-DevDesktops-v3.ps1 -WhatIf
-
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -54,26 +30,43 @@ param(
     [string]$DatacenterName       = 'Staging',
     [string]$FolderName           = 'Windows Workstations',
 
-    [switch]$PowerOnAfterCreate = $false,
-    [string]$LogPath = 'C:\Temp\DiskOperations.csv',
-    [ValidateRange(0,100)][decimal]$MinimumDatastoreFreePercent = 10,
-    [ValidateRange(0,1000000000)][decimal]$MinimumDatastoreFreeGB = 50,
-    [ValidateRange(0,1000000)][decimal]$MaximumDatastoreProvisionedPercent = 150,
-    [pscredential]$Credential,
-    [string]$VIServer
+    [switch]$PowerOnAfterCreate = $false
 )
-
-Import-Module (Join-Path $PSScriptRoot 'Modules\PowerCLI.Toolkit.psm1') -Force -ErrorAction Stop
-Write-Host ("[i] PowerCLI Toolkit {0}" -f (Get-ToolkitVersion)) -ForegroundColor Gray
-
 
 # ------------------------------------------------------------
 # FUNCTIONS
 # ------------------------------------------------------------
 
 function Write-AlignedDetails {
-    param([System.Collections.IDictionary]$Details, [int]$Indent = 2, [hashtable]$Colors = @{})
-    Write-ToolkitDetails -Details $Details -Indent $Indent -Colors $Colors
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2,
+
+        [Parameter()]
+        [hashtable]$Colors
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        $line = '{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject]
+        if ($null -ne $Colors -and $Colors.ContainsKey($label)) {
+            Write-Host $line -ForegroundColor $Colors[$label]
+        }
+        else {
+            Write-Host $line
+        }
+    }
 }
 
 function Write-VCenterConnectionDetails {
@@ -135,18 +128,52 @@ function Read-ExitAwareInput {
 }
 
 function Connect-VCenterIfNeeded {
-    return Connect-ToolkitVCenter -Name $VIServer -Credential $Credential
+
+    $connectionCandidates = @($global:DefaultVIServers) + @($global:DefaultVIServer)
+    $activeConnections = @(
+        $connectionCandidates |
+            Where-Object { $null -ne $_ -and $_.IsConnected } |
+            Sort-Object Name -Unique
+    )
+
+    if ($activeConnections.Count -gt 0) {
+        return $activeConnections
+    }
+
+    Write-Warning 'No active vCenter connection was found.'
+    Write-Host ''
+    while ($true) {
+        $serverName = Read-ExitAwareInput -Prompt 'Enter the vCenter Server host name or IP address'
+        if ([string]::IsNullOrWhiteSpace($serverName)) {
+            Write-Warning 'The vCenter Server host name or IP address cannot be blank.'
+            Write-Host ''
+            continue
+        }
+
+        $credential = Get-Credential -Message "Enter credentials for vCenter Server '$serverName'."
+        if ($null -eq $credential) {
+            throw [System.OperationCanceledException]::new('Cancelled. No VMs were created.')
+        }
+
+        try {
+            $connection = Connect-VIServer -Server $serverName -Credential $credential -ErrorAction Stop
+            return $connection
+        }
+        catch {
+            Write-Warning "Could not connect to vCenter Server '$serverName': $($_.Exception.Message)"
+            Write-Host ''
+        }
+    }
 }
 
 function Get-ClusterRootResourcePool {
 
     param([string]$Name)
 
-    $cluster = Get-Cluster -Server $server -ErrorAction Stop | Where-Object Name -ieq $Name
+    $cluster = Get-Cluster -Name $Name -ErrorAction Stop
 
-    if (@($cluster).Count -ne 1) { throw 'Expected one exact VM cluster match.' }
     $rp = $cluster |
-        Get-ResourcePool -Server $server -ErrorAction Stop |
+        Get-ResourcePool |
         Where-Object { $_.ExtensionData.Owner.Type -eq "ClusterComputeResource" } |
         Select-Object -First 1
 
@@ -158,24 +185,32 @@ function Get-ClusterRootResourcePool {
 }
 
 function Get-OrCreateVmFolder {
-    param([string]$DatacenterName, [string]$FolderName)
-    $dc = @(Get-Datacenter -Server $server -ErrorAction Stop | Where-Object Name -ieq $DatacenterName)
-    if ($dc.Count -ne 1) { throw 'Expected one exact datacenter match.' }
-    $folders = @(Get-Folder -Type VM -Location $dc[0] -Server $server -ErrorAction Stop | Where-Object Name -ieq $FolderName)
-    if ($folders.Count -gt 1) { throw "More than one VM folder named '$FolderName' exists in the datacenter." }
-    if ($folders.Count -eq 1) { return $folders[0] }
-    $root = Get-Folder -Id ("Folder-" + $dc[0].ExtensionData.VmFolder.Value) -Server $server -ErrorAction Stop
-    return New-Folder -Name $FolderName -Location $root -Server $server -ErrorAction Stop
+
+    param(
+        [string]$DatacenterName,
+        [string]$FolderName
+    )
+
+    $dc = Get-Datacenter -Name $DatacenterName -ErrorAction Stop
+
+    $folder = Get-Folder -Name $FolderName -Type VM -Location $dc -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+
+    if (-not $folder) {
+        Write-Host "Creating folder '$FolderName'..." -ForegroundColor Cyan
+        $folder = New-Folder -Name $FolderName -Location $dc -Type VM -ErrorAction Stop
+    }
+
+    return $folder
 }
 
 function Get-BestDatastoreFromCluster {
 
     param([string]$ClusterName)
 
-    $cluster = @(Get-DatastoreCluster -Server $server -ErrorAction Stop | Where-Object Name -ieq $ClusterName)
-    if ($cluster.Count -ne 1) { throw 'Expected one exact datastore cluster match.' }
+    $cluster = Get-DatastoreCluster -Name $ClusterName -ErrorAction Stop
 
-    $ds = Get-Datastore -Location $cluster -Server $server -ErrorAction Stop |
+    $ds = Get-Datastore -Location $cluster |
         Where-Object { $_.State -eq "Available" } |
         Sort-Object FreeSpaceGB -Descending |
         Select-Object -First 1
@@ -202,7 +237,7 @@ function Read-VmNamePrefix {
     }
 
     while ($true) {
-        Write-Host 'Select a VM naming convention:' -ForegroundColor Cyan
+        Write-Host 'Select a virtual machine naming convention:' -ForegroundColor Cyan
         Write-Host ''
         Write-Host '  1. 11VMDEV'
         Write-Host '  2. 11VMGC'
@@ -225,7 +260,7 @@ function Read-VmNamePrefix {
 function Read-CustomVmName {
 
     while ($true) {
-        $name = Read-ExitAwareInput -Prompt 'Enter a custom VM name'
+        $name = Read-ExitAwareInput -Prompt 'Enter a custom virtual machine name'
 
         if ([string]::IsNullOrWhiteSpace($name)) {
             Write-Warning 'The custom VM name cannot be blank.'
@@ -248,7 +283,7 @@ function Read-VmCount {
     $maximumVmCount = 10
 
     while ($true) {
-        $answer = Read-ExitAwareInput -Prompt 'Enter the number of VMs to create' -Options "1-$maximumVmCount"
+        $answer = Read-ExitAwareInput -Prompt 'Enter the number of virtual machines to create' -Options "1-$maximumVmCount"
         $count = 0
 
         if ([int]::TryParse($answer, [ref]$count) -and $count -ge 1 -and $count -le $maximumVmCount) {
@@ -274,7 +309,7 @@ function Get-ExistingVmByBaseName {
     $validNamePattern = "^$escapedBaseName(?:\s+-\s+.+)?$"
 
     return @(
-        Get-VM -Location $Cluster -Server $server -ErrorAction Stop |
+        Get-VM -Name "$BaseName*" -Location $Cluster -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match $validNamePattern }
     )
 }
@@ -294,7 +329,7 @@ function Get-NextVmNames {
 
     $escapedPrefix = [regex]::Escape($Prefix)
     $existingNumbers = @(
-        Get-VM -Location $Cluster -Server $server -ErrorAction Stop |
+        Get-VM -Name "$Prefix*" -Location $Cluster -ErrorAction SilentlyContinue |
             ForEach-Object {
                 if ($_.Name -match "^$escapedPrefix(?<Number>\d+)(?:\s+-\s+.+)?$") {
                     [pscustomobject]@{
@@ -339,14 +374,12 @@ function Get-NextVmNames {
 # ------------------------------------------------------------
 
 try {
-$server = Connect-VCenterIfNeeded
-Write-VCenterConnectionDetails -Server $server
+$vCenterServers = @(Connect-VCenterIfNeeded)
+Write-VCenterConnectionDetails -Server $vCenterServers
 
 $nameSelection = Read-VmNamePrefix
 Write-Host ''
-$targetCluster = @(Get-Cluster -Server $server -ErrorAction Stop | Where-Object Name -ieq $ClusterName)
-if ($targetCluster.Count -ne 1) { throw 'Expected one exact VM cluster match.' }
-$targetCluster = $targetCluster[0]
+$targetCluster = Get-Cluster -Name $ClusterName -ErrorAction Stop
 
 $plan = $null
 if ($nameSelection -eq 'CUSTOM') {
@@ -397,7 +430,7 @@ Write-AlignedDetails -Indent 0 -Details ([ordered]@{
     })
 Write-Host ''
 
-$confirmation = if ($WhatIfPreference) { 'Y' } else { Read-ExitAwareInput -Prompt 'Create the listed VMs? [Y/N]' }
+$confirmation = Read-ExitAwareInput -Prompt 'Create the listed virtual machines? [Y/N]'
 if ($confirmation -notmatch '^(?i:y|yes)$') {
     Write-Host ''
     Write-Host 'Cancelled. No VMs were created.' -ForegroundColor Yellow
@@ -412,11 +445,9 @@ catch [System.OperationCanceledException] {
     return
 }
 
-$template = @(Get-Template -Server $server -ErrorAction Stop | Where-Object Name -ieq $TemplateName)
-if ($template.Count -ne 1) { throw 'Expected one exact VM template match.' }
-$template = $template[0]
+$template = Get-Template -Name $TemplateName -ErrorAction Stop
 $rootPool = Get-ClusterRootResourcePool -Name $ClusterName
-$vmFolder = $null
+$vmFolder = Get-OrCreateVmFolder -DatacenterName $DatacenterName -FolderName $FolderName
 $targetDatastore = Get-BestDatastoreFromCluster -ClusterName $DatastoreClusterName
 
 Write-Host "Using datastore: $($targetDatastore.Name)" -ForegroundColor Green
@@ -444,51 +475,25 @@ for ($index = 0; $index -lt $vmNames.Count; $index++) {
         Template     = $template
         ResourcePool = $rootPool
         Datastore    = $targetDatastore
-        Server       = $server
+        Location     = $vmFolder
         ErrorAction  = 'Stop'
     }
 
-    $creationRecord = $null
     try {
 
-        $targetDatastore = Get-Datastore -Id $targetDatastore.Id -Server $server -ErrorAction Stop
-        $templateDisks = @(Get-HardDisk -Template $template -Server $server -ErrorAction Stop)
-        $requestedDiskGB = ($templateDisks | Measure-Object CapacityGB -Sum).Sum
-        Show-ToolkitDatastoreCapacity -Datastore $targetDatastore -AdditionalGB $requestedDiskGB -StorageFormat Template -MinimumFreePercent $MinimumDatastoreFreePercent -MinimumFreeGB $MinimumDatastoreFreeGB -MaximumProvisionedPercent $MaximumDatastoreProvisionedPercent
-        if ($PSCmdlet.ShouldProcess($name, "Create VM and its virtual disks; create target folder if missing")) {
-            $vmFolder = Get-OrCreateVmFolder -DatacenterName $DatacenterName -FolderName $FolderName
-            $params.Location = $vmFolder
-            $recordVM = [pscustomobject]@{Name=$name;Id='';ExtensionData=[pscustomobject]@{Config=[pscustomobject]@{InstanceUuid=''}}}
-            $creationRecord = New-ToolkitDiskRecord -VM $recordVM -Server $server -Operation 'CloneVMDisks' -RequestedCapacityGB $requestedDiskGB -OldCapacityGB 0 -ScriptName 'New-DevDesktops-v3.ps1'
-            Write-ToolkitCsvRecord -Path $LogPath -Record $creationRecord
+        if ($PSCmdlet.ShouldProcess($name, "Create VM")) {
 
             # CRITICAL FIX:
             # Prevent PowerCLI from returning/processing VM object stream
             [void](New-VM @params)
 
             # Re-query instead of trusting return object
-            $createdVMs = @(Get-VM -Location $targetCluster -Server $server -ErrorAction Stop | Where-Object Name -ieq $name)
-            if ($createdVMs.Count -ne 1) { throw 'Created VM could not be uniquely verified.' }
-            $vm = $createdVMs[0]
-            $createdDisks = @(Get-HardDisk -VM $vm -Server $server -ErrorAction Stop)
-            $expectedCapacities = @($templateDisks | ForEach-Object { [decimal]$_.CapacityGB } | Sort-Object)
-            $actualCapacities = @($createdDisks | ForEach-Object { [decimal]$_.CapacityGB } | Sort-Object)
-            if (($expectedCapacities -join ',') -ne ($actualCapacities -join ',')) { throw 'Cloned disk capacities do not match the template.' }
-            $creationRecord.VMId = $vm.Id
-            $creationRecord.VMInstanceUUID = $vm.ExtensionData.Config.InstanceUuid
-            $creationRecord.Cluster = $targetCluster.Name
-            $creationRecord.HardDisk = ($createdDisks.Name -join '; ')
-            $creationRecord.VMDKPath = ($createdDisks.Filename -join '; ')
-            $creationRecord.Datastore = $targetDatastore.Name
-            Complete-ToolkitDiskRecord -Path $LogPath -Record $creationRecord -Result 'Success' -VerifiedCapacityGB (($createdDisks | Measure-Object CapacityGB -Sum).Sum)
-            $creationRecord = $null
+            $vm = Get-VM -Name $name -Location $targetCluster -ErrorAction Stop
 
             Write-Host "[OK] Created: $($vm.Name)" -ForegroundColor Green
 
             if ($PowerOnAfterCreate) {
-                Start-VM -VM $vm -Server $server -Confirm:$false -ErrorAction Stop | Out-Null
-                $poweredVM = Get-VM -Id $vm.Id -Server $server -ErrorAction Stop
-                if ($poweredVM.PowerState -ne 'PoweredOn') { throw 'VM power-on could not be verified.' }
+                Start-VM -VM $vm -Confirm:$false | Out-Null
                 Write-Host "[OK] Powered on" -ForegroundColor Green
             }
             else {
@@ -498,10 +503,7 @@ for ($index = 0; $index -lt $vmNames.Count; $index++) {
 
     }
     catch {
-        if ($null -ne $creationRecord) {
-            try { Complete-ToolkitDiskRecord -Path $LogPath -Record $creationRecord -Result 'Unverified' -ErrorMessage $_.Exception.Message }
-            catch { Write-Warning $_.Exception.Message }
-        }
+
         Write-Host ""
         Write-Host "[ERROR] FAILED: $name" -ForegroundColor Red
         Write-Host "----------------------------------------"
