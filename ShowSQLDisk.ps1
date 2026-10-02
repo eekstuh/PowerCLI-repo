@@ -5,6 +5,10 @@
 Lists vSphere virtual disks with Windows guest volume and datastore details.
 
 .DESCRIPTION
+Before each guest command, verifies power state, VMware Tools status, and
+execution of a harmless PowerShell command using the supplied credentials.
+Failed readiness checks stop the requested guest command without replaying it.
+
 Selects a VM and prompts for Windows administrator credentials. Displays the
 Windows Server (SQL workflow) virtual-disk table from Expand-VSphereVmDisk-v3.ps1:
 Number, Disk, GuestVolumes, HDCapacityGB, GuestVolFreeGB, DatastoreFreeGB,
@@ -65,6 +69,32 @@ function Read-GuestCredential {
     }
 }
 
+function Assert-WindowsGuestReadiness {
+    param(
+        [Parameter(Mandatory)][object]$VM,
+        [Parameter(Mandatory)][pscredential]$Credential,
+        [Parameter(Mandatory)][object]$Server
+    )
+
+    $currentVM = Get-VM -Id $VM.Id -Server $Server -ErrorAction Stop
+    if ($currentVM.PowerState -ne 'PoweredOn') {
+        throw "VM '$($VM.Name)' must be powered on before running guest operations."
+    }
+    if ($currentVM.ExtensionData.Guest.ToolsRunningStatus -ne 'guestToolsRunning') {
+        throw "VMware Tools is not running on '$($VM.Name)'. Start VMware Tools before retrying."
+    }
+    # A harmless command checks actual guest execution, not just Tools status.
+    # Run it with the same credentials before each operation; never replay a
+    # mutating guest command to determine whether the transport is healthy.
+    $marker = 'POWERCLI_READY_' + [guid]::NewGuid().ToString('N')
+    $ProgressPreference = 'SilentlyContinue'
+    $probe = Invoke-VMScript -VM $currentVM -Server $Server -GuestCredential $Credential -ScriptType Powershell -ScriptText ("Write-Output '" + $marker + "'") -ErrorAction Stop
+    $lines = @(([string]$probe.ScriptOutput -split '\r?\n') | ForEach-Object { $_.Trim() })
+    if ($probe.ExitCode -ne 0 -or $lines -notcontains $marker) {
+        throw "VMware Tools guest readiness check failed on '$($VM.Name)' (exit code $($probe.ExitCode)). The requested guest operation was not started. Restart VMware Tools, or reboot the VM if the issue persists."
+    }
+}
+
 function Invoke-WindowsGuestPowerShell {
     param(
         [Parameter(Mandatory)]
@@ -99,7 +129,8 @@ catch {
 '@
     $wrappedScript = $wrappedScript.Replace('__GUEST_SCRIPT_BODY__', $ScriptText)
 
-    $result = Invoke-VMScript -VM $VM -GuestCredential $Credential -ScriptType Powershell -ScriptText $wrappedScript -ErrorAction Stop
+    Assert-WindowsGuestReadiness -VM $VM -Credential $Credential -Server $server
+    $result = Invoke-VMScript -VM $VM -Server $server -GuestCredential $Credential -ScriptType Powershell -ScriptText $wrappedScript -ErrorAction Stop
     if ($result.ExitCode -ne 0) {
         $errorDetails = [string]$result.ScriptOutput
         if ([string]::IsNullOrWhiteSpace($errorDetails)) {

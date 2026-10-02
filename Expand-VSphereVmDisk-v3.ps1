@@ -6,6 +6,12 @@
 Expands one existing virtual disk on a vSphere VM with an enhanced Version 3 console interface.
 
 .DESCRIPTION
+Before each guest command, verifies power state, VMware Tools status, and
+execution of a harmless PowerShell command using the supplied credentials.
+Failed readiness checks stop the requested guest command without replaying it.
+After a VMDK resize, re-reads the selected disk and verifies its requested
+capacity before reporting success or proceeding with Windows partition work.
+
 Expands a VM's virtual disk in vSphere and optionally extends a Windows
 partition through VMware Tools.
 
@@ -1024,6 +1030,52 @@ function Get-WindowsGuestCredential {
     }
 }
 
+function Get-VerifiedExpandedHardDisk {
+    param(
+        [Parameter(Mandatory)][object]$VM,
+        [Parameter(Mandatory)][object]$Server,
+        [Parameter(Mandatory)][object]$HardDisk,
+        [Parameter(Mandatory)][decimal]$ExpectedCapacityGB
+    )
+
+    $matches = @(Get-HardDisk -VM $VM -Server $Server -ErrorAction Stop |
+        Where-Object { $_.Id -eq $HardDisk.Id -and $_.Filename -ieq $HardDisk.Filename })
+    if ($matches.Count -ne 1) {
+        throw 'The resized VMDK could not be uniquely verified. Guest changes were stopped. Check the VM before retrying.'
+    }
+    # Allow only the 1 KiB rounding used by VMDK capacity.
+    if ([math]::Abs([decimal]$matches[0].CapacityGB - $ExpectedCapacityGB) -gt (1 / 1MB)) {
+        throw "VMDK verification returned $($matches[0].CapacityGB) GB instead of $ExpectedCapacityGB GB. Guest changes were stopped. Check the VM before retrying."
+    }
+    return $matches[0]
+}
+
+function Assert-WindowsGuestReadiness {
+    param(
+        [Parameter(Mandatory)][object]$VM,
+        [Parameter(Mandatory)][pscredential]$Credential,
+        [Parameter(Mandatory)][object]$Server
+    )
+
+    $currentVM = Get-VM -Id $VM.Id -Server $Server -ErrorAction Stop
+    if ($currentVM.PowerState -ne 'PoweredOn') {
+        throw "VM '$($VM.Name)' must be powered on before running guest operations."
+    }
+    if ($currentVM.ExtensionData.Guest.ToolsRunningStatus -ne 'guestToolsRunning') {
+        throw "VMware Tools is not running on '$($VM.Name)'. Start VMware Tools before retrying."
+    }
+    # A harmless command checks actual guest execution, not just Tools status.
+    # Run it with the same credentials before each operation; never replay a
+    # mutating guest command to determine whether the transport is healthy.
+    $marker = 'POWERCLI_READY_' + [guid]::NewGuid().ToString('N')
+    $ProgressPreference = 'SilentlyContinue'
+    $probe = Invoke-VMScript -VM $currentVM -Server $Server -GuestCredential $Credential -ScriptType Powershell -ScriptText ("Write-Output '" + $marker + "'") -ErrorAction Stop
+    $lines = @(([string]$probe.ScriptOutput -split '\r?\n') | ForEach-Object { $_.Trim() })
+    if ($probe.ExitCode -ne 0 -or $lines -notcontains $marker) {
+        throw "VMware Tools guest readiness check failed on '$($VM.Name)' (exit code $($probe.ExitCode)). The requested guest operation was not started. Restart VMware Tools, or reboot the VM if the issue persists."
+    }
+}
+
 function Invoke-GuestScriptWithCredentialRetry {
     param(
         [Parameter(Mandatory)] [object]$VM,
@@ -1047,7 +1099,8 @@ function Invoke-GuestScriptWithCredentialRetry {
         }
         else {
             try {
-                return Invoke-VMScript -VM $VM -GuestCredential $Credential -ScriptType Powershell -ScriptText $ScriptText -ErrorAction Stop
+                Assert-WindowsGuestReadiness -VM $VM -Credential $Credential -Server $server
+                return Invoke-VMScript -VM $VM -Server $server -GuestCredential $Credential -ScriptType Powershell -ScriptText $ScriptText -ErrorAction Stop
             }
             catch {
                 if ($_.Exception.Message -notmatch '(?i)vix error codes\s*=\s*\(\s*3033\s*,\s*0\s*\)') {
@@ -1830,7 +1883,8 @@ try {
 
     Write-Host ''
     Write-EnhancedUiStatus -Type Action -Message "Expanding $($disk.Name) to $newCapacityGB GB in vSphere..."
-    Set-HardDisk -HardDisk $disk -CapacityGB $newCapacityGB -Confirm:$false -ErrorAction Stop | Out-Null
+    Set-HardDisk -HardDisk $disk -CapacityGB $newCapacityGB -Server $server -Confirm:$false -ErrorAction Stop | Out-Null
+    $disk = Get-VerifiedExpandedHardDisk -VM $vm -Server $server -HardDisk $disk -ExpectedCapacityGB $newCapacityGB
     $script:VmdkExpanded = $true
 
     Write-Host "`nSuccessfully expanded '$($disk.Name)' on '$($vm.Name)' by $additionalGB GB." -ForegroundColor Green

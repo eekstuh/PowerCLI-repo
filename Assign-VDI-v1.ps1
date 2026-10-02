@@ -3,6 +3,10 @@
 Assigns an available developer desktop virtual machine to a user.
 
 .DESCRIPTION
+Before each guest command, verifies power state, VMware Tools status, and
+execution of a harmless PowerShell command using the supplied credentials.
+Failed readiness checks stop the requested guest command without replaying it.
+
 Assigns powered-on VDIs in the Developer Desktops cluster. Retrieves the user's
 full name and consultant status from Active Directory.
 
@@ -1333,6 +1337,32 @@ function ConvertTo-GuestBase64 {
     return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
 }
 
+function Assert-WindowsGuestReadiness {
+    param(
+        [Parameter(Mandatory)][object]$VM,
+        [Parameter(Mandatory)][pscredential]$Credential,
+        [Parameter(Mandatory)][object]$Server
+    )
+
+    $currentVM = Get-VM -Id $VM.Id -Server $Server -ErrorAction Stop
+    if ($currentVM.PowerState -ne 'PoweredOn') {
+        throw "VM '$($VM.Name)' must be powered on before running guest operations."
+    }
+    if ($currentVM.ExtensionData.Guest.ToolsRunningStatus -ne 'guestToolsRunning') {
+        throw "VMware Tools is not running on '$($VM.Name)'. Start VMware Tools before retrying."
+    }
+    # A harmless command checks actual guest execution, not just Tools status.
+    # Run it with the same credentials before each operation; never replay a
+    # mutating guest command to determine whether the transport is healthy.
+    $marker = 'POWERCLI_READY_' + [guid]::NewGuid().ToString('N')
+    $ProgressPreference = 'SilentlyContinue'
+    $probe = Invoke-VMScript -VM $currentVM -Server $Server -GuestCredential $Credential -ScriptType Powershell -ScriptText ("Write-Output '" + $marker + "'") -ErrorAction Stop
+    $lines = @(([string]$probe.ScriptOutput -split '\r?\n') | ForEach-Object { $_.Trim() })
+    if ($probe.ExitCode -ne 0 -or $lines -notcontains $marker) {
+        throw "VMware Tools guest readiness check failed on '$($VM.Name)' (exit code $($probe.ExitCode)). The requested guest operation was not started. Restart VMware Tools, or reboot the VM if the issue persists."
+    }
+}
+
 function Invoke-GuestScriptWithCredentialRetry {
     param(
         [Parameter(Mandatory)] [object]$VM,
@@ -1356,7 +1386,8 @@ function Invoke-GuestScriptWithCredentialRetry {
         }
         else {
             try {
-                return Invoke-VMScript -VM $VM -GuestCredential $Credential -ScriptType Powershell -ScriptText $ScriptText -ErrorAction Stop
+                Assert-WindowsGuestReadiness -VM $VM -Credential $Credential -Server $server
+                return Invoke-VMScript -VM $VM -Server $server -GuestCredential $Credential -ScriptType Powershell -ScriptText $ScriptText -ErrorAction Stop
             }
             catch {
                 if ($_.Exception.Message -notmatch '(?i)vix error codes\s*=\s*\(\s*3033\s*,\s*0\s*\)') {
