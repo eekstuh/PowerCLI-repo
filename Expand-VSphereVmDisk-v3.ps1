@@ -83,6 +83,11 @@ username and password, including when GuestCredential was supplied initially.
 Skips all vSphere virtual-disk changes and runs only the Windows guest partition
 workflow. Use this to resume after the VMDK was already expanded.
 
+.PARAMETER ShowTimings
+Displays measured execution stages, excluding credential entry and selection
+prompts. Includes Windows volume-query time inside the guest and the remaining
+guest-command overhead. Timings do not change readiness or confirmation checks.
+
 .EXAMPLE
 .\Expand-VSphereVmDisk-v3.ps1 -VIServer vcsa01.contoso.com
 
@@ -91,6 +96,9 @@ workflow. Use this to resume after the VMDK was already expanded.
 
 .EXAMPLE
 .\Expand-VSphereVmDisk-v3.ps1 -VMName APP01 -GuestOnly
+
+.EXAMPLE
+.\Expand-VSphereVmDisk-v3.ps1 -VMName SQL01 -ShowTimings
 #>
 [CmdletBinding()]
 param(
@@ -129,7 +137,9 @@ param(
     [System.Management.Automation.PSCredential]$GuestCredential,
 
     [Parameter()]
-    [switch]$GuestOnly
+    [switch]$GuestOnly,
+
+    [switch]$ShowTimings
 )
 
 $EnhancedUI = $true
@@ -137,11 +147,58 @@ $ErrorActionPreference = 'Stop'
 $script:ResolvedGuestCredential = $null
 $script:ExitRequested = $false
 $script:VmdkExpanded = $false
+$script:ExecutionTimings = $null
+$script:VolumeQuerySeconds = $null
+$script:VolumeCommandSeconds = $null
 $script:GuestPartitionDeleted = $false
 $script:GuestPartitionExtended = $false
 $vmNameWasSupplied = $PSBoundParameters.ContainsKey('VMName')
 $diskNumberWasSupplied = $PSBoundParameters.ContainsKey('DiskNumber')
 $sizeWasSupplied = $PSBoundParameters.ContainsKey('GBSizeToIncrease')
+
+function Measure-ExecutionStage {
+    param([string]$Name, [scriptblock]$Action)
+    if (-not $ShowTimings) { & $Action; return }
+    if ($null -eq $script:ExecutionTimings) {
+        $script:ExecutionTimings = [collections.generic.list[object]]::new()
+    }
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $status = 'Failed'
+    try {
+        & $Action
+        $status = 'Completed'
+    }
+    finally {
+        $watch.Stop()
+        $script:ExecutionTimings.Add([pscustomobject]@{
+            Name=$Name; Seconds=$watch.Elapsed.TotalSeconds; Status=$status
+        })
+    }
+}
+
+function Write-ExecutionTimings {
+    if (-not $ShowTimings -or $null -eq $script:ExecutionTimings -or $script:ExecutionTimings.Count -eq 0) { return }
+    Write-Host "`nExecution timings (prompt time excluded):" -ForegroundColor Cyan
+    $width = '  Windows volume queries (within guest command)'.Length
+    foreach ($entry in $script:ExecutionTimings) { $width = [math]::Max($width, $entry.Name.Length) }
+    foreach ($entry in $script:ExecutionTimings) {
+        $suffix = if ($entry.Status -eq 'Failed') { ' (failed)' } else { '' }
+        Write-Host ('  {0} : {1,8:N3} seconds{2}' -f $entry.Name.PadRight($width), $entry.Seconds, $suffix)
+    }
+    $total = ($script:ExecutionTimings | Measure-Object Seconds -Sum).Sum
+    Write-Host ('  {0} : {1,8:N3} seconds' -f 'Total measured stages'.PadRight($width), $total)
+    if ($null -ne $script:VolumeQuerySeconds) {
+        Write-Host ('  {0} : {1,8:N3} seconds' -f '  Windows volume queries (within guest command)'.PadRight($width), $script:VolumeQuerySeconds)
+        if ($null -ne $script:VolumeCommandSeconds -and $script:VolumeCommandSeconds -ge $script:VolumeQuerySeconds) {
+            Write-Host ('  {0} : {1,8:N3} seconds' -f '  Remaining guest-command overhead'.PadRight($width), ($script:VolumeCommandSeconds - $script:VolumeQuerySeconds))
+        }
+        Write-Host '  Guest sub-timings are included above, not added to the total.' -ForegroundColor Gray
+    }
+    $script:ExecutionTimings.Clear()
+    $script:VolumeQuerySeconds = $null
+    $script:VolumeCommandSeconds = $null
+    Write-Host ''
+}
 
 function Write-EnhancedUiBanner {
     if (-not $EnhancedUI) {
@@ -554,6 +611,7 @@ function Get-WindowsGuestVolumeLabels {
 
     $scriptText = @'
 $ErrorActionPreference = 'Stop'
+$queryWatch = if (__SHOW_TIMINGS__) { [System.Diagnostics.Stopwatch]::StartNew() } else { $null }
 $volumes = foreach ($partition in Get-Partition) {
     $volume = Get-Volume -Partition $partition -ErrorAction SilentlyContinue
     if ($null -eq $volume) {
@@ -584,11 +642,20 @@ $volumes = foreach ($partition in Get-Partition) {
 
 [pscustomobject]@{
     Volumes = @($volumes)
+    QuerySeconds = if ($null -ne $queryWatch) { $queryWatch.Stop(); $queryWatch.Elapsed.TotalSeconds } else { $null }
 } | ConvertTo-Json -Depth 4 -Compress
 '@
 
+    $scriptText = $scriptText.Replace('__SHOW_TIMINGS__', $(if ($ShowTimings) { '$true' } else { '$false' }))
+    $script:VolumeQuerySeconds = $null
+    $script:VolumeCommandSeconds = $null
     $json = Invoke-WindowsGuestPowerShell -VM $VM -Credential $Credential -ScriptText $scriptText
-    $payload = $json | ConvertFrom-Json -ErrorAction Stop
+    $payload = Measure-ExecutionStage -Name 'Parse guest volume inventory' -Action { $json | ConvertFrom-Json -ErrorAction Stop }
+    if ($ShowTimings -and $null -ne $payload.QuerySeconds) {
+        $script:VolumeQuerySeconds = [double]$payload.QuerySeconds
+        $lastCommand = $script:ExecutionTimings | Where-Object Name -eq 'Guest command (Tools round trip)' | Select-Object -Last 1
+        if ($null -ne $lastCommand) { $script:VolumeCommandSeconds = $lastCommand.Seconds }
+    }
     return @($payload.Volumes)
 }
 
@@ -849,7 +916,7 @@ function Select-HardDisk {
         [int]$InitialDiskNumber
     )
 
-    $disks = @(
+    $disks = @(Measure-ExecutionStage -Name 'Retrieve virtual disk inventory' -Action {
         Get-HardDisk -VM $VM -Server $Server -ErrorAction Stop |
             Sort-Object `
                 @{ Expression = {
@@ -862,7 +929,7 @@ function Select-HardDisk {
                     }
                 } },
                 Name
-    )
+    })
     if ($disks.Count -eq 0) {
         throw "VM '$($VM.Name)' has no virtual hard disks."
     }
@@ -870,7 +937,9 @@ function Select-HardDisk {
     Write-Host "`nVirtual disks on '$($VM.Name)':" -ForegroundColor Cyan
     $diskList = for ($index = 0; $index -lt $disks.Count; $index++) {
         $datastoreSpace = try {
-            Get-HardDiskDatastoreSpace -HardDisk $disks[$index] -Server $Server
+            Measure-ExecutionStage -Name "Datastore query ($($disks[$index].Name))" -Action {
+                Get-HardDiskDatastoreSpace -HardDisk $disks[$index] -Server $Server
+            }
         }
         catch {
             Write-Warning "Could not retrieve datastore space information for '$($disks[$index].Name)': $($_.Exception.Message)"
@@ -882,12 +951,16 @@ function Select-HardDisk {
             Disk                       = $disks[$index].Name
         }
         if ($IncludeGuestVolumes) {
-            $display = Get-GuestVolumeDisplayForHardDisk -HardDisk $disks[$index] -VolumeLabelsByPath $VolumeLabelsByPath
+            $display = Measure-ExecutionStage -Name "Map volumes ($($disks[$index].Name))" -Action {
+                Get-GuestVolumeDisplayForHardDisk -HardDisk $disks[$index] -VolumeLabelsByPath $VolumeLabelsByPath
+            }
             $row['GuestVolumes'] = $display
         }
         $row['HDCapacityGB'] = [decimal]$disks[$index].CapacityGB
         if ($IncludeGuestVolumes) {
-            $row['GuestVolFreeGB'] = Get-HardDiskGuestFreeSpace -HardDisk $disks[$index] -VM $VM
+            $row['GuestVolFreeGB'] = Measure-ExecutionStage -Name "Read guest free space ($($disks[$index].Name))" -Action {
+                Get-HardDiskGuestFreeSpace -HardDisk $disks[$index] -VM $VM
+            }
         }
         $row += [ordered]@{
             DatastoreFreeGB            = if ($null -ne $datastoreSpace) { [decimal]$datastoreSpace.FreeSpaceGB } else { 'Unavailable' }
@@ -908,6 +981,7 @@ function Select-HardDisk {
     Write-Host (($diskList | Format-Table -Property $tableColumns -AutoSize | Out-String).TrimEnd())
     Write-Host ''
 
+    Write-ExecutionTimings
     if ($PSBoundParameters.ContainsKey('InitialDiskNumber')) {
         if ($InitialDiskNumber -gt $disks.Count) {
             throw "Disk number $InitialDiskNumber is invalid. VM '$($VM.Name)' has $($disks.Count) virtual disk(s)."
@@ -1057,7 +1131,7 @@ function Assert-WindowsGuestReadiness {
         [Parameter(Mandatory)][object]$Server
     )
 
-    $currentVM = Get-VM -Id $VM.Id -Server $Server -ErrorAction Stop
+    $currentVM = Measure-ExecutionStage -Name 'Refresh VM information' -Action { Get-VM -Id $VM.Id -Server $Server -ErrorAction Stop }
     if ($currentVM.PowerState -ne 'PoweredOn') {
         throw "VM '$($VM.Name)' must be powered on before running guest operations."
     }
@@ -1069,7 +1143,9 @@ function Assert-WindowsGuestReadiness {
     # mutating guest command to determine whether the transport is healthy.
     $marker = 'POWERCLI_READY_' + [guid]::NewGuid().ToString('N')
     $ProgressPreference = 'SilentlyContinue'
-    $probe = Invoke-VMScript -VM $currentVM -Server $Server -GuestCredential $Credential -ScriptType Powershell -ScriptText ("Write-Output '" + $marker + "'") -ErrorAction Stop
+    $probe = Measure-ExecutionStage -Name 'VMware Tools readiness command' -Action {
+        Invoke-VMScript -VM $currentVM -Server $Server -GuestCredential $Credential -ScriptType Powershell -ScriptText ("Write-Output '" + $marker + "'") -ErrorAction Stop
+    }
     $lines = @(([string]$probe.ScriptOutput -split '\r?\n') | ForEach-Object { $_.Trim() })
     if ($probe.ExitCode -ne 0 -or $lines -notcontains $marker) {
         throw "VMware Tools guest readiness check failed on '$($VM.Name)' (exit code $($probe.ExitCode)). The requested guest operation was not started. Restart VMware Tools, or reboot the VM if the issue persists."
@@ -1100,7 +1176,9 @@ function Invoke-GuestScriptWithCredentialRetry {
         else {
             try {
                 Assert-WindowsGuestReadiness -VM $VM -Credential $Credential -Server $server
-                return Invoke-VMScript -VM $VM -Server $server -GuestCredential $Credential -ScriptType Powershell -ScriptText $ScriptText -ErrorAction Stop
+                return Measure-ExecutionStage -Name 'Guest command (Tools round trip)' -Action {
+                    Invoke-VMScript -VM $VM -Server $server -GuestCredential $Credential -ScriptType Powershell -ScriptText $ScriptText -ErrorAction Stop
+                }
             }
             catch {
                 if ($_.Exception.Message -notmatch '(?i)vix error codes\s*=\s*\(\s*3033\s*,\s*0\s*\)') {
@@ -1904,4 +1982,7 @@ try {
 catch {
     Write-Error $_.Exception.Message
     exit 1
+}
+finally {
+    Write-ExecutionTimings
 }

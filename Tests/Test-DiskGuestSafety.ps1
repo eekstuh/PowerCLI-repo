@@ -26,7 +26,7 @@ function Assert-Fails {
 foreach ($file in @('Expand-VSphereVmDisk-v3.ps1','Expand-MultipleVSphereVmDisks-v1.ps1','Assign-VDI-v1.ps1','ShowSQLDisk.ps1')) {
     & {
         $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $file),[ref]$null,[ref]$null)
-        foreach ($name in @('Assert-WindowsGuestReadiness','Invoke-GuestScriptWithCredentialRetry','Invoke-WindowsGuestPowerShell','Get-VerifiedExpandedHardDisk')) {
+        foreach ($name in @('Measure-ExecutionStage','Assert-WindowsGuestReadiness','Invoke-GuestScriptWithCredentialRetry','Invoke-WindowsGuestPowerShell','Get-VerifiedExpandedHardDisk')) {
             $definition = $ast.EndBlock.Statements | Where-Object {
                 $_ -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -eq $name
             }
