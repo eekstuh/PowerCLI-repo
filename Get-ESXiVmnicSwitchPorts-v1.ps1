@@ -9,10 +9,10 @@ Displays ESXi vmnic connections to physical switch ports.
 Reports physical switch connections for link-up ESXi adapters named
 vmnic<number>. USB adapters such as vusb0 are excluded.
 
-The report includes the cluster, vSphere switch, associated VMkernel adapters
-and their MAC addresses, physical switch name and port, discovery protocol,
-and link speed. A VMkernel adapter appears on each vmnic that backs its
-standard or distributed switch; this includes teamed uplinks.
+The report includes the cluster, vSphere switch, associated VMkernel adapters,
+their MAC addresses and network labels, physical switch name and port,
+discovery protocol, and link speed. A VMkernel adapter appears on each vmnic
+that backs its standard or distributed switch; this includes teamed uplinks.
 
 Switch details come from CDP or LLDP advertisements received by each host.
 If neighbor data is unavailable, reports that the connection was not
@@ -411,13 +411,48 @@ function Get-PropertyText {
     return $value
 }
 
+function Get-DistributedPortgroupLabels {
+    param(
+        [Parameter(Mandatory)]
+        [object]$Server
+    )
+
+    if ($null -eq $script:DistributedPortgroupLabels) {
+        $script:DistributedPortgroupLabels = @{}
+    }
+    $serverKey = [string]$Server.Name
+    if ($script:DistributedPortgroupLabels.ContainsKey($serverKey)) {
+        return $script:DistributedPortgroupLabels[$serverKey]
+    }
+
+    $labels = @{}
+    try {
+        foreach ($portgroup in @(Get-VDPortgroup -Server $Server -ErrorAction Stop)) {
+            $key = Get-PropertyText -InputObject $portgroup.ExtensionData -Name 'Key'
+            $name = Get-PropertyText -InputObject $portgroup -Name 'Name'
+            if (-not [string]::IsNullOrWhiteSpace($key) -and -not [string]::IsNullOrWhiteSpace($name)) {
+                $labels[$key] = $name
+            }
+        }
+    }
+    catch {
+        Write-Warning "Distributed port-group labels could not be retrieved from '$($Server.Name)': $($_.Exception.Message)"
+    }
+
+    $script:DistributedPortgroupLabels[$serverKey] = $labels
+    return $labels
+}
+
 function Get-VMKernelAdaptersForVmnic {
     param(
         [Parameter(Mandatory)]
         [object]$NetworkInfo,
 
         [Parameter(Mandatory)]
-        [string]$Vmnic
+        [string]$Vmnic,
+
+        [Parameter(Mandatory)]
+        [object]$Server
     )
 
     $standardSwitches = @(
@@ -437,6 +472,7 @@ function Get-VMKernelAdaptersForVmnic {
         }
 
         $isAttached = $false
+        $networkLabel = $null
         $portgroupName = Get-PropertyText -InputObject $spec -Name 'Portgroup'
         if (-not [string]::IsNullOrWhiteSpace($portgroupName)) {
             $portgroups = @(
@@ -450,10 +486,12 @@ function Get-VMKernelAdaptersForVmnic {
                 $null
             }
             $isAttached = $standardSwitches -contains $standardSwitchName
+            $networkLabel = $portgroupName
         }
         else {
             $distributedPort = $spec.DistributedVirtualPort
             $switchUuid = Get-PropertyText -InputObject $distributedPort -Name 'SwitchUuid'
+            $portgroupKey = Get-PropertyText -InputObject $distributedPort -Name 'PortgroupKey'
             if (-not [string]::IsNullOrWhiteSpace($switchUuid)) {
                 $isAttached = @(
                     $proxySwitches | Where-Object {
@@ -462,12 +500,20 @@ function Get-VMKernelAdaptersForVmnic {
                     }
                 ).Count -gt 0
             }
+            if ($isAttached -and -not [string]::IsNullOrWhiteSpace($portgroupKey)) {
+                $distributedPortgroupLabels = Get-DistributedPortgroupLabels -Server $Server
+                $networkLabel = $distributedPortgroupLabels[$portgroupKey]
+                if ([string]::IsNullOrWhiteSpace($networkLabel)) {
+                    $networkLabel = "(unresolved distributed port group: $portgroupKey)"
+                }
+            }
         }
 
         if ($isAttached) {
             [pscustomobject]@{
                 Name = [string]$vmk.Device
                 Mac  = Get-PropertyText -InputObject $spec -Name 'Mac'
+                NetworkLabel = if ([string]::IsNullOrWhiteSpace($networkLabel)) { '(unavailable)' } else { $networkLabel }
             }
         }
     }
@@ -542,9 +588,10 @@ function Get-VMHostVmnicReport {
                 $switchPort = '(not advertised)'
             }
 
-            $vmkAdapters = @(Get-VMKernelAdaptersForVmnic -NetworkInfo $networkSystem.NetworkInfo -Vmnic ([string]$pnic.Device))
+            $vmkAdapters = @(Get-VMKernelAdaptersForVmnic -NetworkInfo $networkSystem.NetworkInfo -Vmnic ([string]$pnic.Device) -Server $Server)
             $vmkNames = @($vmkAdapters.Name | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             $vmkMacAddresses = @($vmkAdapters.Mac | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            $vmkNetworkLabels = @($vmkAdapters | ForEach-Object { "$($_.Name): $($_.NetworkLabel)" })
 
             [pscustomobject]@{
                 Cluster           = $clusterName
@@ -552,6 +599,7 @@ function Get-VMHostVmnicReport {
                 Vmnic             = [string]$pnic.Device
                 VMKAdapters       = if ($vmkNames.Count -gt 0) { $vmkNames -join ', ' } else { '(none)' }
                 VMKMacAddresses   = if ($vmkMacAddresses.Count -gt 0) { $vmkMacAddresses -join ', ' } else { '(none)' }
+                VMKNetworkLabel   = if ($vmkNetworkLabels.Count -gt 0) { $vmkNetworkLabels -join '; ' } else { '(none)' }
                 Link              = 'Up'
                 SpeedMbps         = [int]$pnic.LinkSpeed.SpeedMb
                 vSphereSwitch     = Get-VSphereSwitchNames -NetworkInfo $networkSystem.NetworkInfo -Vmnic ([string]$pnic.Device)
@@ -589,7 +637,7 @@ try {
     }
     else {
         $reportTable = $report |
-            Select-Object Cluster, ESXiHost, Vmnic, VMKAdapters, VMKMacAddresses, Link, SpeedMbps, vSphereSwitch, PhysicalSwitch, SwitchPort, Protocol |
+            Select-Object Cluster, ESXiHost, Vmnic, VMKAdapters, VMKMacAddresses, VMKNetworkLabel, Link, SpeedMbps, vSphereSwitch, PhysicalSwitch, SwitchPort, Protocol |
             Format-Table -AutoSize -Wrap |
             Out-String
         Write-Host ($reportTable.TrimEnd())
