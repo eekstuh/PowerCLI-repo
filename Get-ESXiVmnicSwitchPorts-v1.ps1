@@ -9,8 +9,10 @@ Displays ESXi vmnic connections to physical switch ports.
 Reports physical switch connections for link-up ESXi adapters named
 vmnic<number>. USB adapters such as vusb0 are excluded.
 
-The report includes the cluster, vSphere switch, physical switch name and
-port, discovery protocol, and link speed.
+The report includes the cluster, vSphere switch, associated VMkernel adapters
+and their MAC addresses, physical switch name and port, discovery protocol,
+and link speed. A VMkernel adapter appears on each vmnic that backs its
+standard or distributed switch; this includes teamed uplinks.
 
 Switch details come from CDP or LLDP advertisements received by each host.
 If neighbor data is unavailable, reports that the connection was not
@@ -390,6 +392,89 @@ function Get-VSphereSwitchNames {
     return $switchNames -join ', '
 }
 
+function Get-PropertyText {
+    param(
+        [Parameter()]
+        [object]$InputObject,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    if ($null -eq $InputObject -or $InputObject.PSObject.Properties.Name -notcontains $Name) {
+        return $null
+    }
+    $value = [string]$InputObject.$Name
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $null
+    }
+    return $value
+}
+
+function Get-VMKernelAdaptersForVmnic {
+    param(
+        [Parameter(Mandatory)]
+        [object]$NetworkInfo,
+
+        [Parameter(Mandatory)]
+        [string]$Vmnic
+    )
+
+    $standardSwitches = @(
+        $NetworkInfo.Vswitch |
+            Where-Object { @($_.Pnic | Where-Object { Test-PnicReference -Reference $_ -Vmnic $Vmnic }).Count -gt 0 } |
+            ForEach-Object { [string]$_.Name }
+    )
+    $proxySwitches = @(
+        $NetworkInfo.ProxySwitch |
+            Where-Object { @($_.Pnic | Where-Object { Test-PnicReference -Reference $_ -Vmnic $Vmnic }).Count -gt 0 }
+    )
+
+    $results = foreach ($vmk in @($NetworkInfo.Vnic)) {
+        $spec = $vmk.Spec
+        if ($null -eq $spec) {
+            continue
+        }
+
+        $isAttached = $false
+        $portgroupName = Get-PropertyText -InputObject $spec -Name 'Portgroup'
+        if (-not [string]::IsNullOrWhiteSpace($portgroupName)) {
+            $portgroups = @(
+                $NetworkInfo.Portgroup |
+                    Where-Object { (Get-PropertyText -InputObject $_.Spec -Name 'Name') -ieq $portgroupName }
+            )
+            $standardSwitchName = if ($portgroups.Count -eq 1) {
+                Get-PropertyText -InputObject $portgroups[0].Spec -Name 'VswitchName'
+            }
+            else {
+                $null
+            }
+            $isAttached = $standardSwitches -contains $standardSwitchName
+        }
+        else {
+            $distributedPort = $spec.DistributedVirtualPort
+            $switchUuid = Get-PropertyText -InputObject $distributedPort -Name 'SwitchUuid'
+            if (-not [string]::IsNullOrWhiteSpace($switchUuid)) {
+                $isAttached = @(
+                    $proxySwitches | Where-Object {
+                        $proxyUuid = Get-PropertyText -InputObject $_ -Name 'DvsUuid'
+                        $proxyUuid -ieq $switchUuid
+                    }
+                ).Count -gt 0
+            }
+        }
+
+        if ($isAttached) {
+            [pscustomobject]@{
+                Name = [string]$vmk.Device
+                Mac  = Get-PropertyText -InputObject $spec -Name 'Mac'
+            }
+        }
+    }
+
+    return @($results | Sort-Object Name -Unique)
+}
+
 function Get-VMHostVmnicReport {
     param(
         [Parameter(Mandatory)]
@@ -406,7 +491,7 @@ function Get-VMHostVmnicReport {
             throw 'The host network-system reference is unavailable.'
         }
 
-        $networkSystem = Get-View -Id $networkSystemId -Server $Server -Property NetworkInfo.Pnic,NetworkInfo.Vswitch,NetworkInfo.ProxySwitch -ErrorAction Stop
+        $networkSystem = Get-View -Id $networkSystemId -Server $Server -Property NetworkInfo.Pnic,NetworkInfo.Vnic,NetworkInfo.Portgroup,NetworkInfo.Vswitch,NetworkInfo.ProxySwitch -ErrorAction Stop
         $pnics = @(
             $networkSystem.NetworkInfo.Pnic |
                 Where-Object {
@@ -457,10 +542,16 @@ function Get-VMHostVmnicReport {
                 $switchPort = '(not advertised)'
             }
 
+            $vmkAdapters = @(Get-VMKernelAdaptersForVmnic -NetworkInfo $networkSystem.NetworkInfo -Vmnic ([string]$pnic.Device))
+            $vmkNames = @($vmkAdapters.Name | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            $vmkMacAddresses = @($vmkAdapters.Mac | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+
             [pscustomobject]@{
                 Cluster           = $clusterName
                 ESXiHost          = $VMHost.Name
                 Vmnic             = [string]$pnic.Device
+                VMKAdapters       = if ($vmkNames.Count -gt 0) { $vmkNames -join ', ' } else { '(none)' }
+                VMKMacAddresses   = if ($vmkMacAddresses.Count -gt 0) { $vmkMacAddresses -join ', ' } else { '(none)' }
                 Link              = 'Up'
                 SpeedMbps         = [int]$pnic.LinkSpeed.SpeedMb
                 vSphereSwitch     = Get-VSphereSwitchNames -NetworkInfo $networkSystem.NetworkInfo -Vmnic ([string]$pnic.Device)
@@ -498,7 +589,7 @@ try {
     }
     else {
         $reportTable = $report |
-            Select-Object Cluster, ESXiHost, Vmnic, Link, SpeedMbps, vSphereSwitch, PhysicalSwitch, SwitchPort, Protocol |
+            Select-Object Cluster, ESXiHost, Vmnic, VMKAdapters, VMKMacAddresses, Link, SpeedMbps, vSphereSwitch, PhysicalSwitch, SwitchPort, Protocol |
             Format-Table -AutoSize -Wrap |
             Out-String
         Write-Host ($reportTable.TrimEnd())
