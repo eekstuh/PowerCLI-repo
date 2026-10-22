@@ -51,6 +51,7 @@ Online disks without partitions appear as 'No partitions' and cannot be
 selected for partition extension.
 
 Navigation:
+  - Enter 'back' at multiple-disk selection to answer the Y/N question again.
   - Enter 'skip' at the Workstation capacity prompt for guest-only extension.
   - Enter 'back' at the partition prompt to choose another Windows disk.
   - Enter 'exit' at a text prompt to cancel the remaining workflow.
@@ -1911,8 +1912,14 @@ function Invoke-MultipleDiskExpansion {
 
     $selected = @()
     while ($selected.Count -eq 0) {
-        $inputValue = Read-ExitAwareInput -Prompt 'Select disk numbers to expand'
+        $inputValue = Read-ExitAwareInput -Prompt 'Select disk numbers to expand' -PromptOptions "enter 'back' to return to the multiple-disk question, or 'exit' to cancel"
         Stop-IfExitRequested
+        if ($inputValue -ieq 'back') {
+            $script:MultiDiskMode = $false
+            $script:MultiDiskModeAsked = $false
+            Write-Host ''
+            return 'Back'
+        }
         $numbers = @($inputValue -split '[,\s]+' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ })
         $numbers = @($numbers | Sort-Object -Unique)
         if ($numbers.Count -eq 0) {
@@ -2028,10 +2035,16 @@ try {
     if ($diskNumberWasSupplied) {
         $diskArguments.InitialDiskNumber = $DiskNumber
     }
-    $disk = Select-HardDisk @diskArguments
-    if ($script:MultiDiskMode) {
-        Invoke-MultipleDiskExpansion -VM $vm -Server $server -Workflow $workflow
-        return
+    while ($true) {
+        $disk = Select-HardDisk @diskArguments
+        if ($script:MultiDiskMode) {
+            $multiDiskResult = Invoke-MultipleDiskExpansion -VM $vm -Server $server -Workflow $workflow
+            if ($multiDiskResult -eq 'Back') {
+                continue
+            }
+            return
+        }
+        break
     }
     if ($null -eq $disk) {
         throw 'Disk selection was cancelled.'
