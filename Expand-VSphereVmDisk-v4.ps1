@@ -1912,7 +1912,7 @@ function Invoke-MultipleDiskExpansion {
 
     $selected = @()
     while ($selected.Count -eq 0) {
-        $inputValue = Read-ExitAwareInput -Prompt 'Select disk numbers to expand' -PromptOptions "enter 'back' to return to the multiple-disk question, or 'exit' to cancel"
+        $inputValue = Read-ExitAwareInput -Prompt 'Select disk numbers to expand' -PromptOptions "enter 'back' to go back, or 'exit' to cancel"
         Stop-IfExitRequested
         if ($inputValue -ieq 'back') {
             $script:MultiDiskMode = $false
