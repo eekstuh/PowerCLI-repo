@@ -45,4 +45,40 @@ $workflow = 'Windows'
 if ($script:selectionCount -ne 2 -or $disk.Name -ne 'Hard disk 2') {
     throw 'Back did not return to selection and resume the single-disk workflow.'
 }
+# Exercise the single-disk prompt with N -> back -> Y and N -> back -> N.
+$selectDefinition = $ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Select-HardDisk'
+}, $true)
+$singleSelectionLoop = $selectDefinition.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.WhileStatementAst]
+}, $true)
+$disks = @([pscustomobject]@{Name='Hard disk 1'}, [pscustomobject]@{Name='Hard disk 2'})
+function Read-YesNo {
+    param($Prompt)
+    if ($script:answers.Count -eq 0) { throw 'Unexpected mode prompt.' }
+    return $script:answers.Dequeue()
+}
+function Read-ExitAwareInput {
+    param($Prompt, $PromptOptions)
+    if ($PromptOptions -ne "enter 'back' to go back, or 'exit' to cancel") { throw 'Incorrect navigation prompt.' }
+    if ($script:choices.Count -eq 0) { throw 'Unexpected disk prompt.' }
+    return $script:choices.Dequeue()
+}
+foreach ($switchToMultiple in @($true, $false)) {
+    $script:MultiDiskModeAsked = $false
+    $script:MultiDiskMode = $false
+    $script:answers = New-Object System.Collections.Queue
+    $script:answers.Enqueue($false)
+    $script:answers.Enqueue($switchToMultiple)
+    $script:choices = New-Object System.Collections.Queue
+    $script:choices.Enqueue('BACK')
+    if (-not $switchToMultiple) { $script:choices.Enqueue('2') }
+    $selected = & ([scriptblock]::Create($singleSelectionLoop.Extent.Text))
+    if ($script:answers.Count -ne 0 -or $script:choices.Count -ne 0 -or $script:MultiDiskMode -ne $switchToMultiple) {
+        throw 'Single-disk back did not repeat the mode question correctly.'
+    }
+    if (-not $switchToMultiple -and $selected.Name -ne 'Hard disk 2') { throw 'Single-disk selection failed after going back.' }
+}
 Write-Host 'Multi-disk back navigation checks passed.'

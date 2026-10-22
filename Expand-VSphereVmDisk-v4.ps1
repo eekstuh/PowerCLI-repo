@@ -51,7 +51,7 @@ Online disks without partitions appear as 'No partitions' and cannot be
 selected for partition extension.
 
 Navigation:
-  - Enter 'back' at multiple-disk selection to answer the Y/N question again.
+  - Enter 'back' at either disk selection prompt to answer the multiple-disk Y/N question again.
   - Enter 'skip' at the Workstation capacity prompt for guest-only extension.
   - Enter 'back' at the partition prompt to choose another Windows disk.
   - Enter 'exit' at a text prompt to cancel the remaining workflow.
@@ -993,15 +993,6 @@ function Select-HardDisk {
 
     Write-ExecutionTimings
 
-    # Version 4: after disk and guest volume inventory, offer multi-disk expansion.
-    if (-not $PSBoundParameters.ContainsKey('InitialDiskNumber') -and $disks.Count -gt 1 -and -not $script:MultiDiskModeAsked) {
-        $script:MultiDiskModeAsked = $true
-        if (Read-YesNo -Prompt 'Would you like to expand multiple disks at once?') {
-            $script:MultiDiskMode = $true
-            return $null
-        }
-    }
-
     if ($PSBoundParameters.ContainsKey('InitialDiskNumber')) {
         if ($InitialDiskNumber -gt $disks.Count) {
             throw "Disk number $InitialDiskNumber is invalid. VM '$($VM.Name)' has $($disks.Count) virtual disk(s)."
@@ -1011,8 +1002,26 @@ function Select-HardDisk {
     }
 
     while ($true) {
-        $choice = Read-ExitAwareInput -Prompt 'Select virtual disk number'
+        if ($disks.Count -gt 1 -and -not $script:MultiDiskModeAsked) {
+            $script:MultiDiskModeAsked = $true
+            $script:MultiDiskMode = Read-YesNo -Prompt 'Would you like to expand multiple disks at once?'
+            if ($script:MultiDiskMode) {
+                return $null
+            }
+        }
+
+        $inputArguments = @{ Prompt = 'Select virtual disk number' }
+        if ($disks.Count -gt 1) {
+            $inputArguments.PromptOptions = "enter 'back' to go back, or 'exit' to cancel"
+        }
+        $choice = Read-ExitAwareInput @inputArguments
         Stop-IfExitRequested
+        if ($disks.Count -gt 1 -and $choice -ieq 'back') {
+            $script:MultiDiskMode = $false
+            $script:MultiDiskModeAsked = $false
+            Write-Host ''
+            continue
+        }
 
         [int]$diskNumber = 0
         if (-not [int]::TryParse($choice, [ref]$diskNumber) -or $diskNumber -lt 1 -or $diskNumber -gt $disks.Count) {
