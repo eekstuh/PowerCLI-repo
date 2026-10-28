@@ -20,6 +20,9 @@ it asks whether you want to expand multiple disks in one session. Choosing no co
 the original single-disk workflow. Choosing yes lets you select several disks, specify
 additional capacity for each, expand all selected VMDKs, and then optionally extend the
 corresponding Windows partitions before the script exits.
+Target VMDK capacity is rounded down to a whole GB after adding the requested
+increase (for example, 100.4949 GB plus 20 GB becomes 120 GB). The target must
+still exceed the current capacity; disk shrinking is never attempted.
 
 Workflow selection:
 Uses the guest OS reported by VMware Tools:
@@ -1034,6 +1037,19 @@ function Select-HardDisk {
     }
 }
 
+function Get-WholeGBExpansionTarget {
+    param(
+        [Parameter(Mandatory)][decimal]$CurrentCapacityGB,
+        [Parameter(Mandatory)][decimal]$AdditionalGB
+    )
+
+    $target = [decimal]::Floor($CurrentCapacityGB + $AdditionalGB)
+    if ($target -le $CurrentCapacityGB) {
+        throw 'The whole-GB target must exceed the current disk capacity. Enter a larger capacity increase.'
+    }
+    return $target
+}
+
 function Read-AdditionalCapacityGB {
     param(
         [Parameter()]
@@ -1949,10 +1965,11 @@ function Invoke-MultipleDiskExpansion {
         Write-Host "  $($d.Name) (current: $($d.CapacityGB) GB)" -ForegroundColor White
         $add = Read-AdditionalCapacityGB
         if ($null -eq $add) { continue }
+        $targetCapacityGB = Get-WholeGBExpansionTarget -CurrentCapacityGB ([decimal]$d.CapacityGB) -AdditionalGB $add
         $plans += [pscustomobject]@{
             Disk            = $d
-            AdditionalGB    = $add
-            NewCapacityGB   = [decimal]$d.CapacityGB + $add
+            AdditionalGB    = $targetCapacityGB - [decimal]$d.CapacityGB
+            NewCapacityGB   = $targetCapacityGB
         }
     }
 
@@ -2082,7 +2099,7 @@ try {
     }
 
     [decimal]$currentCapacityGB = $disk.CapacityGB
-    [decimal]$newCapacityGB = $currentCapacityGB + $additionalGB
+    [decimal]$newCapacityGB = Get-WholeGBExpansionTarget -CurrentCapacityGB $currentCapacityGB -AdditionalGB $additionalGB
 
     Write-Host "`nPlanned change:" -ForegroundColor Cyan
     Write-AlignedDetails -Details ([ordered]@{
@@ -2109,7 +2126,7 @@ try {
     $disk = Get-VerifiedExpandedHardDisk -VM $vm -Server $server -HardDisk $disk -ExpectedCapacityGB $newCapacityGB
     $script:VmdkExpanded = $true
 
-    Write-Host "`nSuccessfully expanded '$($disk.Name)' on '$($vm.Name)' by $additionalGB GB." -ForegroundColor Green
+    Write-Host "`nSuccessfully expanded '$($disk.Name)' on '$($vm.Name)' to $newCapacityGB GB." -ForegroundColor Green
     Write-EnhancedUiStatus -Type Success -Message 'The vSphere virtual disk expansion completed.'
 
     Write-EnhancedUiPhase -Progress '3/4' -Title 'Optional Windows guest partition extension'
