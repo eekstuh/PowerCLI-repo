@@ -10,7 +10,7 @@ Reports physical switch connections for link-up ESXi adapters named
 vmnic<number>. USB adapters such as vusb0 are excluded.
 
 The report includes the cluster, vSphere switch, associated VMkernel adapters,
-their MAC addresses and network labels, physical switch name and port,
+ their MAC addresses, IP addresses and network labels, physical switch name and port,
 discovery protocol, and link speed. A VMkernel adapter appears on each vmnic
 that backs its standard or distributed switch; this includes teamed uplinks.
 
@@ -510,9 +510,16 @@ function Get-VMKernelAdaptersForVmnic {
         }
 
         if ($isAttached) {
+            $ipAddresses = @(
+                Get-PropertyText -InputObject $spec.Ip -Name 'IpAddress'
+                foreach ($ipv6 in @($spec.Ip.IpV6Config.IpV6Address)) {
+                    Get-PropertyText -InputObject $ipv6 -Name 'IpAddress'
+                }
+            ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
             [pscustomobject]@{
                 Name = [string]$vmk.Device
                 Mac  = Get-PropertyText -InputObject $spec -Name 'Mac'
+                IPAddresses = if (@($ipAddresses).Count -gt 0) { $ipAddresses -join ', ' } else { '(unavailable)' }
                 NetworkLabel = if ([string]::IsNullOrWhiteSpace($networkLabel)) { '(unavailable)' } else { $networkLabel }
             }
         }
@@ -592,6 +599,7 @@ function Get-VMHostVmnicReport {
             $vmkNames = @($vmkAdapters.Name | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             $vmkMacAddresses = @($vmkAdapters.Mac | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             $vmkNetworkLabels = @($vmkAdapters | ForEach-Object { "$($_.Name): $($_.NetworkLabel)" })
+            $vmkIPAddresses = @($vmkAdapters | ForEach-Object { "$($_.Name): $($_.IPAddresses)" })
 
             [pscustomobject]@{
                 Cluster           = $clusterName
@@ -599,6 +607,7 @@ function Get-VMHostVmnicReport {
                 Vmnic             = [string]$pnic.Device
                 VMKAdapters       = if ($vmkNames.Count -gt 0) { $vmkNames -join ', ' } else { '(none)' }
                 VMKMacAddresses   = if ($vmkMacAddresses.Count -gt 0) { $vmkMacAddresses -join ', ' } else { '(none)' }
+                VMKIPAddresses    = if ($vmkIPAddresses.Count -gt 0) { $vmkIPAddresses -join '; ' } else { '(none)' }
                 VMKNetworkLabel   = if ($vmkNetworkLabels.Count -gt 0) { $vmkNetworkLabels -join '; ' } else { '(none)' }
                 Link              = 'Up'
                 SpeedMbps         = [int]$pnic.LinkSpeed.SpeedMb
@@ -637,7 +646,7 @@ try {
     }
     else {
         $reportTable = $report |
-            Select-Object Cluster, ESXiHost, Vmnic, VMKAdapters, VMKMacAddresses, VMKNetworkLabel, Link, SpeedMbps, vSphereSwitch, PhysicalSwitch, SwitchPort, Protocol |
+            Select-Object Cluster, ESXiHost, Vmnic, VMKAdapters, VMKMacAddresses, VMKIPAddresses, VMKNetworkLabel, Link, SpeedMbps, vSphereSwitch, PhysicalSwitch, SwitchPort, Protocol |
             Format-Table -AutoSize -Wrap |
             Out-String
         Write-Host ($reportTable.TrimEnd())
