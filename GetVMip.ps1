@@ -121,6 +121,76 @@ function Get-VCenterConnection {
     }
 }
 
+function Write-AlignedDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Details,
+
+        [Parameter()]
+        [ValidateRange(0, 40)]
+        [int]$Indent = 2,
+
+        [Parameter()]
+        [hashtable]$Colors
+    )
+
+    if ($Details.Count -eq 0) {
+        return
+    }
+
+    $labelWidth = [int](($Details.Keys | ForEach-Object { ([string]$_).Length } | Measure-Object -Maximum).Maximum)
+    $prefix = ' ' * $Indent
+    foreach ($labelObject in $Details.Keys) {
+        $label = [string]$labelObject
+        $line = '{0}{1} : {2}' -f $prefix, $label.PadRight($labelWidth), $Details[$labelObject]
+        if ($null -ne $Colors -and $Colors.ContainsKey($label)) {
+            Write-Host $line -ForegroundColor $Colors[$label]
+        }
+        else {
+            Write-Host $line
+        }
+    }
+}
+
+function Write-VCenterConnectionDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Server
+    )
+
+    $connections = @($Server | Where-Object { $null -ne $_ })
+    if ($connections.Count -eq 0) {
+        throw 'No vCenter Server connection details are available.'
+    }
+
+    Write-Host ''
+    $heading = if ($connections.Count -eq 1) { 'Connected to vCenter Server:' } else { 'Connected to vCenter Servers:' }
+    Write-Host $heading -ForegroundColor Green
+    for ($index = 0; $index -lt $connections.Count; $index++) {
+        $connection = $connections[$index]
+        if ($connections.Count -gt 1) {
+            Write-Host "  Connection $($index + 1)" -ForegroundColor Green
+        }
+        $version = [string]$connection.Version
+        if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = 'Unavailable'
+        }
+        $build = [string]$connection.Build
+        if ([string]::IsNullOrWhiteSpace($build)) {
+            $build = 'Unavailable'
+        }
+        $indent = if ($connections.Count -eq 1) { 2 } else { 4 }
+        Write-AlignedDetails -Indent $indent -Details ([ordered]@{
+                'Host name' = [string]$connection.Name
+                'Version'   = $version
+                'Build'     = $build
+            })
+    }
+    Write-Host ''
+}
+
 function Test-IPv4Address {
     param([string]$Address)
     $parsed = $null
@@ -148,9 +218,7 @@ try {
     }
 
     $server = Get-VCenterConnection
-    Write-Host ''
-    Write-Host "Connected to vCenter Server: $($server.Name)" -ForegroundColor Green
-    Write-Host ''
+    Write-VCenterConnectionDetails -Server $server
 
     # Look up each pattern; a VM matched by several patterns is reported once.
     $vmsById = [ordered]@{}
