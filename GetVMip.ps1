@@ -6,8 +6,8 @@
 Looks up the IP addresses of VMs in vCenter and exports them to a CSV file.
 
 .DESCRIPTION
-Finds VMs by name and writes one CSV row per VM with its IPv4 and IPv6
-addresses as reported by VMware Tools, plus power state, Tools status, guest OS,
+Finds VMs by name and writes one CSV row per VM with its IPv4 addresses as
+reported by VMware Tools (IPv6 addresses are ignored), plus power state, Tools status, guest OS,
 and ESXi host. Wildcards (* and ?) are allowed in VMName to look up many VMs at
 once. Multiple names or patterns can be supplied separated by commas.
 
@@ -128,13 +128,6 @@ function Test-IPv4Address {
         $parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork)
 }
 
-function Test-IPv6Address {
-    param([string]$Address)
-    $parsed = $null
-    return ([System.Net.IPAddress]::TryParse($Address, [ref]$parsed) -and
-        $parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6)
-}
-
 try {
     # Prompt for a name or pattern when none was supplied.
     $patterns = @($VMName | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -178,20 +171,18 @@ try {
     }
 
     $results = foreach ($vm in ($vmsById.Values | Sort-Object Name)) {
-        $reportedAddresses = @($vm.Guest.IPAddress | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        $ipv4 = @($reportedAddresses | Where-Object { Test-IPv4Address $_ })
-        $ipv6 = @($reportedAddresses | Where-Object { Test-IPv6Address $_ })
+        $ipv4 = @($vm.Guest.IPAddress | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-IPv4Address $_) })
 
         $note = ''
-        if ($reportedAddresses.Count -eq 0) {
+        if ($ipv4.Count -eq 0) {
             if ($vm.PowerState -ne 'PoweredOn') {
-                $note = "VM is $($vm.PowerState); no IP address is reported."
+                $note = "VM is $($vm.PowerState); no IPv4 address is reported."
             }
             elseif ([string]$vm.ExtensionData.Guest.ToolsRunningStatus -ne 'guestToolsRunning') {
-                $note = 'VMware Tools is not running; no IP address is reported.'
+                $note = 'VMware Tools is not running; no IPv4 address is reported.'
             }
             else {
-                $note = 'VMware Tools reported no IP address.'
+                $note = 'VMware Tools reported no IPv4 address.'
             }
         }
 
@@ -199,7 +190,6 @@ try {
             VMName      = $vm.Name
             PowerState  = [string]$vm.PowerState
             IPv4Address = ($ipv4 -join '; ')
-            IPv6Address = ($ipv6 -join '; ')
             GuestOS     = $(if ($vm.Guest.OSFullName) { $vm.Guest.OSFullName } else { [string]$vm.ExtensionData.Config.GuestFullName })
             ToolsStatus = [string]$vm.ExtensionData.Guest.ToolsRunningStatus
             VMHost      = $(if ($vm.VMHost) { $vm.VMHost.Name } else { '' })
@@ -216,9 +206,9 @@ try {
     }
     $results | Export-Csv -LiteralPath $CsvPath -NoTypeInformation -Encoding UTF8
 
-    $results | Format-Table VMName, PowerState, IPv4Address, IPv6Address, Note -AutoSize | Out-Host
-    $withIp = @($results | Where-Object { $_.IPv4Address -or $_.IPv6Address }).Count
-    Write-Host "Found $($results.Count) VM(s); $withIp with a reported IP address." -ForegroundColor Cyan
+    $results | Format-Table VMName, PowerState, IPv4Address, Note -AutoSize | Out-Host
+    $withIp = @($results | Where-Object { $_.IPv4Address }).Count
+    Write-Host "Found $($results.Count) VM(s); $withIp with a reported IPv4 address." -ForegroundColor Cyan
     Write-Host "CSV saved to: $((Resolve-Path -LiteralPath $CsvPath).Path)" -ForegroundColor Green
 }
 catch {
