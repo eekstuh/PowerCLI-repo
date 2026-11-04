@@ -15,11 +15,8 @@ capacity before reporting success or proceeding with Windows partition work.
 Expands one or more virtual disks on a VM in vSphere and optionally extends Windows
 partitions through VMware Tools.
 
-After the script retrieves virtual disk inventory and guest volume/partition information,
-it asks whether you want to expand multiple disks in one session. Choosing no continues
-the original single-disk workflow. Choosing yes lets you select several disks, specify
-additional capacity for each, expand all selected VMDKs, and then optionally extend the
-corresponding Windows partitions before the script exits.
+After each virtual disk is expanded, the script asks whether to select and expand
+another disk before continuing to optional Windows partition extension.
 Target VMDK capacity is rounded down to a whole GB after adding the requested
 increase (for example, 100.4949 GB plus 20 GB becomes 120 GB). The target must
 still exceed the current capacity; disk shrinking is never attempted.
@@ -54,7 +51,6 @@ Online disks without partitions appear as 'No partitions' and cannot be
 selected for partition extension.
 
 Navigation:
-  - Enter 'back' at either disk selection prompt to answer the multiple-disk Y/N question again.
   - Enter 'skip' at the Workstation capacity prompt for guest-only extension.
   - Enter 'back' at the partition prompt to choose another Windows disk.
   - Enter 'exit' at a text prompt to cancel the remaining workflow.
@@ -100,7 +96,7 @@ guest-command overhead. Timings do not change readiness or confirmation checks.
 
 .EXAMPLE
 .\Expand-VSphereVmDisk-v4.ps1 -VIServer vcsa01.contoso.com
-# After the disk inventory is displayed the script asks whether to expand multiple disks.
+# After each disk expansion, the script offers to select another disk.
 
 .EXAMPLE
 .\Expand-VSphereVmDisk-v4.ps1 -VIServer vcsa01.contoso.com -VMName APP01 -DiskNumber 2 -GBSizeToIncrease 100
@@ -1005,27 +1001,9 @@ function Select-HardDisk {
     }
 
     while ($true) {
-        if ($disks.Count -gt 1 -and -not $script:MultiDiskModeAsked) {
-            $script:MultiDiskModeAsked = $true
-            $script:MultiDiskMode = Read-YesNo -Prompt 'Would you like to expand multiple disks at once?'
-            if ($script:MultiDiskMode) {
-                return $null
-            }
-        }
-
         $inputArguments = @{ Prompt = 'Select virtual disk number' }
-        if ($disks.Count -gt 1) {
-            $inputArguments.PromptOptions = "enter 'back' to go back, or 'exit' to cancel"
-        }
         $choice = Read-ExitAwareInput @inputArguments
         Stop-IfExitRequested
-        if ($disks.Count -gt 1 -and $choice -ieq 'back') {
-            $script:MultiDiskMode = $false
-            $script:MultiDiskModeAsked = $false
-            Write-Host ''
-            continue
-        }
-
         [int]$diskNumber = 0
         if (-not [int]::TryParse($choice, [ref]$diskNumber) -or $diskNumber -lt 1 -or $diskNumber -gt $disks.Count) {
             Write-Warning "Enter a number from 1 to $($disks.Count)."
@@ -2058,76 +2036,80 @@ try {
         $diskArguments.VolumeLabelsByPath = Get-CombinedGuestVolumeLabelMap -VM $vm
         $diskArguments.IncludeGuestVolumes = $true
     }
-    if ($diskNumberWasSupplied) {
-        $diskArguments.InitialDiskNumber = $DiskNumber
-    }
-    while ($true) {
+    $expandedDisks = @()
+    $vmdkSkipped = $false
+    $continueExpanding = $true
+    $firstDisk = $true
+    while ($continueExpanding) {
+        if ($firstDisk -and $diskNumberWasSupplied) {
+            $diskArguments.InitialDiskNumber = $DiskNumber
+        }
+        else {
+            $diskArguments.Remove('InitialDiskNumber')
+        }
+
         $disk = Select-HardDisk @diskArguments
-        if ($script:MultiDiskMode) {
-            $multiDiskResult = Invoke-MultipleDiskExpansion -VM $vm -Server $server -Workflow $workflow
-            if ($multiDiskResult -eq 'Back') {
-                continue
-            }
+        if ($null -eq $disk) {
+            throw 'Disk selection was cancelled.'
+        }
+        if (-not ($firstDisk -and $diskNumberWasSupplied)) {
+            Write-Host ''
+        }
+        Write-EnhancedUiStatus -Type Success -Message "Selected $($disk.Name) with current capacity $($disk.CapacityGB) GB."
+
+        $capacityArguments = @{}
+        if ($firstDisk -and $sizeWasSupplied) {
+            $capacityArguments.InitialAdditionalGB = $GBSizeToIncrease
+        }
+        if ($workflow -eq 'Windows') {
+            $capacityArguments.AllowSkip = $true
+        }
+        $additionalGB = Read-AdditionalCapacityGB @capacityArguments
+
+        if ($null -eq $additionalGB) {
+            Write-Host ''
+            Write-EnhancedUiStatus -Type Info -Message "vSphere capacity expansion was skipped for '$($disk.Name)'."
+            $vmdkSkipped = $true
+            break
+        }
+
+        [decimal]$currentCapacityGB = $disk.CapacityGB
+        [decimal]$newCapacityGB = Get-WholeGBExpansionTarget -CurrentCapacityGB $currentCapacityGB -AdditionalGB $additionalGB
+
+        Write-Host "`nPlanned change:" -ForegroundColor Cyan
+        Write-AlignedDetails -Details ([ordered]@{
+                'VM'       = $vm.Name
+                'Disk'     = $disk.Name
+                'VMDK'     = $disk.Filename
+                'Capacity' = "$currentCapacityGB GB -> $newCapacityGB GB"
+            })
+        Write-Host ''
+
+        if (-not (Read-YesNo -Prompt "Expand '$($disk.Name)' on '$($vm.Name)' to $newCapacityGB GB?")) {
+            Write-Host ''
+            Write-Host 'Disk expansion was cancelled. No changes were made.' -ForegroundColor Yellow
             return
         }
-        break
-    }
-    if ($null -eq $disk) {
-        throw 'Disk selection was cancelled.'
-    }
-    if (-not $diskNumberWasSupplied) {
+        if (-not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
+            return
+        }
+
         Write-Host ''
+        Write-EnhancedUiStatus -Type Action -Message "Expanding $($disk.Name) to $newCapacityGB GB in vSphere..."
+        Set-HardDisk -HardDisk $disk -CapacityGB $newCapacityGB -Server $server -Confirm:$false -ErrorAction Stop | Out-Null
+        $disk = Get-VerifiedExpandedHardDisk -VM $vm -Server $server -HardDisk $disk -ExpectedCapacityGB $newCapacityGB
+        $script:VmdkExpanded = $true
+        $expandedDisks += [pscustomobject]@{ Disk = $disk; OldCapacityGB = $currentCapacityGB; NewCapacityGB = $newCapacityGB }
+
+        Write-Host "`nSuccessfully expanded '$($disk.Name)' on '$($vm.Name)' to $newCapacityGB GB." -ForegroundColor Green
+        Write-EnhancedUiStatus -Type Success -Message 'The vSphere virtual disk expansion completed.'
+
+        $firstDisk = $false
+        $continueExpanding = $false
+        if (-not $diskNumberWasSupplied -and -not $sizeWasSupplied) {
+            $continueExpanding = Read-YesNo -Prompt "Would you like to expand another disk on '$($vm.Name)'?"
+        }
     }
-    Write-EnhancedUiStatus -Type Success -Message "Selected $($disk.Name) with current capacity $($disk.CapacityGB) GB."
-
-    $capacityArguments = @{}
-    if ($sizeWasSupplied) {
-        $capacityArguments.InitialAdditionalGB = $GBSizeToIncrease
-    }
-    if ($workflow -eq 'Windows') {
-        $capacityArguments.AllowSkip = $true
-    }
-    $additionalGB = Read-AdditionalCapacityGB @capacityArguments
-
-    if ($null -eq $additionalGB) {
-        Write-Host ''
-        Write-EnhancedUiStatus -Type Info -Message "vSphere capacity expansion was skipped for '$($disk.Name)'."
-        Write-EnhancedUiPhase -Progress '3/4' -Title 'Windows guest partition extension' -NoTrailingBlankLine
-        Invoke-WindowsGuestPartitionExtension -VM $vm -SkipPartitionSelectionConfirmation -WindowsWorkstationWorkflow
-        Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '4/4' -SelectedDisk $disk.Name -VmdkSkipped
-        return
-    }
-
-    [decimal]$currentCapacityGB = $disk.CapacityGB
-    [decimal]$newCapacityGB = Get-WholeGBExpansionTarget -CurrentCapacityGB $currentCapacityGB -AdditionalGB $additionalGB
-
-    Write-Host "`nPlanned change:" -ForegroundColor Cyan
-    Write-AlignedDetails -Details ([ordered]@{
-            'VM'       = $vm.Name
-            'Disk'     = $disk.Name
-            'VMDK'     = $disk.Filename
-            'Capacity' = "$currentCapacityGB GB -> $newCapacityGB GB"
-        })
-    Write-Host ''
-
-    if (-not (Read-YesNo -Prompt "Expand '$($disk.Name)' on '$($vm.Name)' to $newCapacityGB GB?")) {
-        Write-Host ''
-        Write-Host 'Disk expansion was cancelled. No changes were made.' -ForegroundColor Yellow
-        return
-    }
-    # A snapshot may have been created while the operator answered prompts.
-    if (-not (Test-VMSnapshotPrerequisite -VM $vm -Server $server)) {
-        return
-    }
-
-    Write-Host ''
-    Write-EnhancedUiStatus -Type Action -Message "Expanding $($disk.Name) to $newCapacityGB GB in vSphere..."
-    Set-HardDisk -HardDisk $disk -CapacityGB $newCapacityGB -Server $server -Confirm:$false -ErrorAction Stop | Out-Null
-    $disk = Get-VerifiedExpandedHardDisk -VM $vm -Server $server -HardDisk $disk -ExpectedCapacityGB $newCapacityGB
-    $script:VmdkExpanded = $true
-
-    Write-Host "`nSuccessfully expanded '$($disk.Name)' on '$($vm.Name)' to $newCapacityGB GB." -ForegroundColor Green
-    Write-EnhancedUiStatus -Type Success -Message 'The vSphere virtual disk expansion completed.'
 
     Write-EnhancedUiPhase -Progress '3/4' -Title 'Optional Windows guest partition extension'
     if (Read-YesNo -Prompt 'Would you like to review and extend a Windows guest partition?') {
@@ -2138,7 +2120,16 @@ try {
         Write-Host 'The Windows partition/volume was not extended.' -ForegroundColor Yellow
     }
 
-    Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '4/4' -SelectedDisk $disk.Name -OldCapacityGB $currentCapacityGB -NewCapacityGB $newCapacityGB
+    if ($expandedDisks.Count -eq 1) {
+        $expandedDisk = $expandedDisks[0]
+        Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '4/4' -SelectedDisk $expandedDisk.Disk.Name -OldCapacityGB $expandedDisk.OldCapacityGB -NewCapacityGB $expandedDisk.NewCapacityGB
+    }
+    elseif ($expandedDisks.Count -gt 1) {
+        Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '4/4' -SelectedDisk "$($expandedDisks.Count) disks"
+    }
+    else {
+        Write-EnhancedUiSummary -SelectedVM $vm.Name -Progress '4/4' -SelectedDisk $disk.Name -VmdkSkipped:$vmdkSkipped
+    }
 }
 catch {
     Write-Error $_.Exception.Message
