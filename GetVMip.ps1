@@ -199,6 +199,9 @@ function Test-IPv4Address {
 }
 
 try {
+    $server = Get-VCenterConnection
+    Write-VCenterConnectionDetails -Server $server
+
     # Prompt for a name or pattern when none was supplied.
     $patterns = @($VMName | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     while ($patterns.Count -eq 0) {
@@ -216,9 +219,6 @@ try {
     if ([string]::IsNullOrWhiteSpace($CsvPath)) {
         $CsvPath = Join-Path -Path (Get-Location).Path -ChildPath ("VM-IPs-{0}.csv" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
     }
-
-    $server = Get-VCenterConnection
-    Write-VCenterConnectionDetails -Server $server
 
     # Look up each pattern; a VM matched by several patterns is reported once.
     $vmsById = [ordered]@{}
