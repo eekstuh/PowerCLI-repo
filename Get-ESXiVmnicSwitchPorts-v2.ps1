@@ -648,9 +648,9 @@ try {
         }
     )
 
-    # Sort by ESXi host, then VMkernel adapter (vmk0, vmk1, ... numerically;
+    # Sort by cluster, ESXi host, then VMkernel adapter (vmk0, vmk1, ... numerically;
     # rows without a vmk last), then vmnic (vmnic0, vmnic1, ... numerically).
-    $report = @($report | Sort-Object ESXiHost,
+    $report = @($report | Sort-Object Cluster, ESXiHost,
         @{ Expression = { if ($_.VMKAdapter) { [int]($_.VMKAdapter -replace '\D', '') } else { [int]::MaxValue } } },
         @{ Expression = { [int]($_.Vmnic -replace '\D', '') } })
     Write-Host "`nLink-up vmnic connections:" -ForegroundColor Cyan
