@@ -648,9 +648,11 @@ try {
         }
     )
 
-    $report = @($report | Sort-Object Cluster, ESXiHost,
-        @{ Expression = { [int]($_.Vmnic -replace '\D', '') } },
-        @{ Expression = { if ($_.VMKAdapter) { [int]($_.VMKAdapter -replace '\D', '') } else { -1 } } })
+    # Sort by ESXi host, then VMkernel adapter (vmk0, vmk1, ... numerically;
+    # rows without a vmk last), then vmnic (vmnic0, vmnic1, ... numerically).
+    $report = @($report | Sort-Object ESXiHost,
+        @{ Expression = { if ($_.VMKAdapter) { [int]($_.VMKAdapter -replace '\D', '') } else { [int]::MaxValue } } },
+        @{ Expression = { [int]($_.Vmnic -replace '\D', '') } })
     Write-Host "`nLink-up vmnic connections:" -ForegroundColor Cyan
     if ($report.Count -eq 0) {
         Write-Warning 'No link-up vmnics were returned from the selected ESXi hosts.'
