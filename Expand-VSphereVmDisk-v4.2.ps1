@@ -329,7 +329,7 @@ function Write-EnhancedUiSummary {
             $summaryDetails[$diskLabel] = "$($expandedDisk.OldCapacityGB) GB -> $($expandedDisk.NewCapacityGB) GB"
             if ($expandedDisk.PSObject.Properties.Name -contains 'PartitionResult') {
                 $summaryDetails["  $($expandedDisk.Disk.Name) partition"] = [string]$expandedDisk.PartitionResult
-                if ([string]$expandedDisk.PartitionResult -like 'Extended*') {
+                if ([string]$expandedDisk.PartitionResult -notlike 'Not extended*') {
                     $summaryColors["  $($expandedDisk.Disk.Name) partition"] = 'Green'
                 }
                 else {
@@ -1870,7 +1870,7 @@ function Invoke-WindowsSelectedPartitionExtension {
     $result = Expand-WindowsGuestPartition -VM $VM -Credential $Credential -Partition $Partition
     $script:GuestPartitionExtended = $true
     Write-Host "Successfully extended Windows disk $($Partition.DiskNumber), partition $($Partition.PartitionNumber) to $($result.NewSizeGB) GB." -ForegroundColor Green
-    return "Extended $($extensionState.CurrentSizeGB) GB -> $($result.NewSizeGB) GB"
+    return "$($extensionState.CurrentSizeGB) GB -> $($result.NewSizeGB) GB"
 }
 
 function Invoke-WindowsGuestPartitionExtension {
