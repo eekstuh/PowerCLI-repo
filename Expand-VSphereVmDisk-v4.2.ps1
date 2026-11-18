@@ -2212,6 +2212,7 @@ try {
         $firstDisk = $false
         $continueExpanding = $false
         if (-not $diskNumberWasSupplied -and -not $sizeWasSupplied) {
+            Write-Host ''
             $continueExpanding = Read-YesNo -Prompt "Would you like to expand another disk on '$($vm.Name)'?"
         }
     }
