@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-Expands one or more existing virtual disks on a vSphere VM with an enhanced Version 4 console interface.
+Expands one or more existing virtual disks on a vSphere VM with an enhanced Version 4.1 console interface.
 
 .DESCRIPTION
 Before each guest command, verifies power state, VMware Tools status, and
@@ -95,17 +95,17 @@ prompts. Includes Windows volume-query time inside the guest and the remaining
 guest-command overhead. Timings do not change readiness or confirmation checks.
 
 .EXAMPLE
-.\Expand-VSphereVmDisk-v4.ps1 -VIServer vcsa01.contoso.com
+.\Expand-VSphereVmDisk-v4.1.ps1 -VIServer vcsa01.contoso.com
 # After each disk expansion, the script offers to select another disk.
 
 .EXAMPLE
-.\Expand-VSphereVmDisk-v4.ps1 -VIServer vcsa01.contoso.com -VMName APP01 -DiskNumber 2 -GBSizeToIncrease 100
+.\Expand-VSphereVmDisk-v4.1.ps1 -VIServer vcsa01.contoso.com -VMName APP01 -DiskNumber 2 -GBSizeToIncrease 100
 
 .EXAMPLE
-.\Expand-VSphereVmDisk-v4.ps1 -VMName APP01 -GuestOnly
+.\Expand-VSphereVmDisk-v4.1.ps1 -VMName APP01 -GuestOnly
 
 .EXAMPLE
-.\Expand-VSphereVmDisk-v4.ps1 -VMName SQL01 -ShowTimings
+.\Expand-VSphereVmDisk-v4.1.ps1 -VMName SQL01 -ShowTimings
 #>
 [CmdletBinding()]
 param(
@@ -216,7 +216,7 @@ function Write-EnhancedUiBanner {
 
     $line = '=' * 72
     Write-Host "`n$line" -ForegroundColor DarkCyan
-    Write-Host '  vSphere Windows VM Disk Expansion Assistant - Version 4.0' -ForegroundColor Cyan
+    Write-Host '  vSphere Windows VM Disk Expansion Assistant - Version 4.1' -ForegroundColor Cyan
     Write-Host $line -ForegroundColor DarkCyan
 }
 
@@ -371,7 +371,11 @@ function Write-EnhancedUiSummary {
         # line per disk with its before and after vSphere capacity.
         $summaryDetails['Disks expanded'] = $expandedDiskList.Count
         foreach ($expandedDisk in $expandedDiskList) {
-            $summaryDetails[[string]$expandedDisk.Disk.Name] = "$($expandedDisk.OldCapacityGB) GB -> $($expandedDisk.NewCapacityGB) GB"
+            $diskLabel = [string]$expandedDisk.Disk.Name
+            if (-not [string]::IsNullOrWhiteSpace([string]$expandedDisk.GuestVolume)) {
+                $diskLabel = "$diskLabel ($($expandedDisk.GuestVolume))"
+            }
+            $summaryDetails[$diskLabel] = "$($expandedDisk.OldCapacityGB) GB -> $($expandedDisk.NewCapacityGB) GB"
         }
     }
     else {
@@ -730,6 +734,33 @@ function Get-GuestVolumeDisplayForHardDisk {
     }
 
     return $displayValues -join '; '
+}
+
+function Get-GuestVolumePathForHardDisk {
+    [OutputType([string])]
+    param([Parameter(Mandatory)][object]$HardDisk)
+
+    # Guest volume path(s) reported by VMware Tools for this VMDK, for example
+    # 'D:\' or 'D:\Userdata01'. Returns $null when Tools has no mapping.
+    if ($null -eq (Get-Command -Name Get-VMGuestDisk -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+    try {
+        $paths = @(
+            Get-VMGuestDisk -HardDisk $HardDisk -ErrorAction Stop |
+                ForEach-Object { [string]$_.DiskPath } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                ForEach-Object { if ($_ -match '^[A-Za-z]:\\$') { $_ } else { $_.TrimEnd('\') } } |
+                Sort-Object -Unique
+        )
+    }
+    catch {
+        return $null
+    }
+    if ($paths.Count -eq 0) {
+        return $null
+    }
+    return $paths -join '; '
 }
 
 function Get-HardDiskGuestFreeSpace {
@@ -1993,7 +2024,7 @@ function Invoke-MultipleDiskExpansion {
         Set-HardDisk -HardDisk $p.Disk -CapacityGB $p.NewCapacityGB -Server $Server -Confirm:$false -ErrorAction Stop | Out-Null
         $verified = Get-VerifiedExpandedHardDisk -VM $VM -Server $Server -HardDisk $p.Disk -ExpectedCapacityGB $p.NewCapacityGB
         $script:VmdkExpanded = $true
-        $expanded += [pscustomobject]@{ Disk = $verified; OldCapacityGB = $oldCapacityGB; NewCapacityGB = $p.NewCapacityGB }
+        $expanded += [pscustomobject]@{ Disk = $verified; OldCapacityGB = $oldCapacityGB; NewCapacityGB = $p.NewCapacityGB; GuestVolume = (Get-GuestVolumePathForHardDisk -HardDisk $verified) }
         Write-Host "Successfully expanded '$($verified.Name)' to $($verified.CapacityGB) GB." -ForegroundColor Green
     }
 
@@ -2114,7 +2145,8 @@ try {
         Set-HardDisk -HardDisk $disk -CapacityGB $newCapacityGB -Server $server -Confirm:$false -ErrorAction Stop | Out-Null
         $disk = Get-VerifiedExpandedHardDisk -VM $vm -Server $server -HardDisk $disk -ExpectedCapacityGB $newCapacityGB
         $script:VmdkExpanded = $true
-        $expandedDisks += [pscustomobject]@{ Disk = $disk; OldCapacityGB = $currentCapacityGB; NewCapacityGB = $newCapacityGB }
+        $guestVolume = Get-GuestVolumePathForHardDisk -HardDisk $disk
+        $expandedDisks += [pscustomobject]@{ Disk = $disk; OldCapacityGB = $currentCapacityGB; NewCapacityGB = $newCapacityGB; GuestVolume = $guestVolume }
 
         Write-Host "`nSuccessfully expanded '$($disk.Name)' on '$($vm.Name)' to $newCapacityGB GB." -ForegroundColor Green
         Write-EnhancedUiStatus -Type Success -Message 'The vSphere virtual disk expansion completed.'
