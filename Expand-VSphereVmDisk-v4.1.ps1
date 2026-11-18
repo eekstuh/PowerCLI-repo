@@ -2122,10 +2122,16 @@ try {
         [decimal]$currentCapacityGB = $disk.CapacityGB
         [decimal]$newCapacityGB = Get-WholeGBExpansionTarget -CurrentCapacityGB $currentCapacityGB -AdditionalGB $additionalGB
 
+        $plannedGuestVolume = Get-GuestVolumePathForHardDisk -HardDisk $disk
+        $plannedDiskLabel = [string]$disk.Name
+        if (-not [string]::IsNullOrWhiteSpace($plannedGuestVolume)) {
+            $plannedDiskLabel = "$plannedDiskLabel ($plannedGuestVolume)"
+        }
+
         Write-Host "`nPlanned change:" -ForegroundColor Cyan
         Write-AlignedDetails -Details ([ordered]@{
                 'VM'       = $vm.Name
-                'Disk'     = $disk.Name
+                'Disk'     = $plannedDiskLabel
                 'VMDK'     = $disk.Filename
                 'Capacity' = "$currentCapacityGB GB -> $newCapacityGB GB"
             })
